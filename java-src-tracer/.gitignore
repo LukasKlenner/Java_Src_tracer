@@ -1,0 +1,7 @@
+.gradle/
+build/
+*.class
+trace-out/
+.idea/
+*.iml
+.vscode/
