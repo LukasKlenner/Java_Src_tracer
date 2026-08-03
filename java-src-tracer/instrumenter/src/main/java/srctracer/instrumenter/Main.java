@@ -4,11 +4,18 @@ import com.github.javaparser.StaticJavaParser;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.NodeList;
+import com.github.javaparser.ast.body.BodyDeclaration;
+import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.ConstructorDeclaration;
+import com.github.javaparser.ast.body.FieldDeclaration;
+import com.github.javaparser.ast.body.InitializerDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.body.TypeDeclaration;
+import com.github.javaparser.ast.body.VariableDeclarator;
 import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.expr.LambdaExpr;
+import com.github.javaparser.ast.expr.MethodCallExpr;
+import com.github.javaparser.ast.expr.ObjectCreationExpr;
 import com.github.javaparser.ast.stmt.BlockStmt;
 import com.github.javaparser.ast.stmt.BreakStmt;
 import com.github.javaparser.ast.stmt.CatchClause;
@@ -31,6 +38,8 @@ import com.github.javaparser.ast.visitor.Visitable;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 
 public class Main {
@@ -50,6 +59,10 @@ public class Main {
         // sibling-insertion (needed for _LOOP_END) works in pass 2.
         cu.accept(new BlockWrappingVisitor(), null);
 
+        // Pass 1.5: extract field initializers with method calls into
+        // initializer blocks so they get instrumented in pass 2.
+        extractFieldInitializers(cu);
+
         // Pass 2: actual trace-call insertion.
         InstrumenterVisitor v = new InstrumenterVisitor();
         cu.accept(v, null);
@@ -57,6 +70,7 @@ public class Main {
         Files.writeString(output, cu.toString());
         System.out.println("Wrote: " + output
                 + " (" + v.methods + " methods, "
+                + v.initializers + " initializers, "
                 + v.ifs + " if, "
                 + v.returns + " return, "
                 + v.loops + " loop, "
@@ -65,24 +79,94 @@ public class Main {
                 + v.mains + " main wrapped)");
     }
 
-    /** Ensures every if-branch, loop body etc. is a BlockStmt rather than a bare statement. */
+    /**
+     * Ensures every if-branch, loop body etc. is a BlockStmt rather than a bare statement.
+     */
     private static class BlockWrappingVisitor extends ModifierVisitor<Void> {
-        @Override public Visitable visit(IfStmt n, Void a) {
+        @Override
+        public Visitable visit(IfStmt n, Void a) {
             super.visit(n, a);
             n.setThenStmt(ensureBlock(n.getThenStmt()));
             n.getElseStmt().ifPresent(e -> n.setElseStmt(ensureBlock(e)));
             return n;
         }
-        @Override public Visitable visit(WhileStmt n, Void a)  { super.visit(n, a); n.setBody(ensureBlock(n.getBody())); return n; }
-        @Override public Visitable visit(DoStmt n, Void a)     { super.visit(n, a); n.setBody(ensureBlock(n.getBody())); return n; }
-        @Override public Visitable visit(ForStmt n, Void a)    { super.visit(n, a); n.setBody(ensureBlock(n.getBody())); return n; }
-        @Override public Visitable visit(ForEachStmt n, Void a){ super.visit(n, a); n.setBody(ensureBlock(n.getBody())); return n; }
+
+        @Override
+        public Visitable visit(WhileStmt n, Void a) {
+            super.visit(n, a);
+            n.setBody(ensureBlock(n.getBody()));
+            return n;
+        }
+
+        @Override
+        public Visitable visit(DoStmt n, Void a) {
+            super.visit(n, a);
+            n.setBody(ensureBlock(n.getBody()));
+            return n;
+        }
+
+        @Override
+        public Visitable visit(ForStmt n, Void a) {
+            super.visit(n, a);
+            n.setBody(ensureBlock(n.getBody()));
+            return n;
+        }
+
+        @Override
+        public Visitable visit(ForEachStmt n, Void a) {
+            super.visit(n, a);
+            n.setBody(ensureBlock(n.getBody()));
+            return n;
+        }
 
         private static BlockStmt ensureBlock(Statement s) {
             if (s instanceof BlockStmt b) return b;
             BlockStmt block = new BlockStmt();
             block.addStatement(s);
             return block;
+        }
+    }
+
+    private static void extractFieldInitializers(CompilationUnit cu) {
+        @SuppressWarnings("unchecked")
+        List<TypeDeclaration<?>> types =
+                (List<TypeDeclaration<?>>) (List<?>) cu.findAll(TypeDeclaration.class);
+
+        for (TypeDeclaration<?> td : types) {
+            if (td instanceof ClassOrInterfaceDeclaration coi && coi.isInterface()) continue;
+
+            List<BodyDeclaration<?>> snapshot = new ArrayList<>(td.getMembers());
+            for (BodyDeclaration<?> member : snapshot) {
+                if (!(member instanceof FieldDeclaration fd)) continue;
+
+                List<VariableDeclarator> toExtract = new ArrayList<>();
+                for (VariableDeclarator vd : fd.getVariables()) {
+                    if (vd.getInitializer().isEmpty()) continue;
+                    Expression init = vd.getInitializer().get();
+                    if (!init.findAll(MethodCallExpr.class).isEmpty()
+                            || !init.findAll(ObjectCreationExpr.class).isEmpty()) {
+                        toExtract.add(vd);
+                    }
+                }
+                if (toExtract.isEmpty()) continue;
+
+                boolean isStatic = fd.isStatic();
+                BlockStmt blockBody = new BlockStmt();
+
+                for (VariableDeclarator vd : toExtract) {
+                    Expression init = vd.getInitializer().get();
+                    vd.removeInitializer();
+                    blockBody.addStatement(StaticJavaParser.parseStatement(
+                            vd.getNameAsString() + " = " + init + ";"));
+                }
+
+                InitializerDeclaration initBlock =
+                        new InitializerDeclaration(isStatic, blockBody);
+
+                NodeList<BodyDeclaration<?>> members = td.getMembers();
+                int fdIdx = members.indexOf(fd);
+                members.add(fdIdx + 1, initBlock);
+            }
         }
     }
 
@@ -98,6 +182,7 @@ public class Main {
         int switches = 0;
         int tries = 0;
         int mains = 0;
+        int initializers = 0;
 
         // ---- Method / constructor entry ----
 
@@ -122,9 +207,9 @@ public class Main {
 
         /**
          * Replaces main's body with:
-         *   trace_start("<ClassName>");
-         *   try { _FUNC(id); <original statements...> }
-         *   finally { trace_end(); }
+         * trace_start("<ClassName>");
+         * try { _FUNC(id); <original statements...> }
+         * finally { trace_end(); }
          */
         private void wrapMainWithLifecycle(MethodDeclaration md, Statement funcCall) {
             BlockStmt original = md.getBody().get();
@@ -179,6 +264,18 @@ public class Main {
             insertFuncCall(body, idx);
             return cd;
         }
+
+        // ---- Initializer blocks ----
+
+//        @Override
+//        public Visitable visit(InitializerDeclaration n, Void a) {
+//            super.visit(n, a);
+//            int id = nextFuncId++;
+//            initializers++;
+//            n.getBody().addStatement(0, parseStatement(
+//                    "srctracer.Trace._FUNC(" + id + ");"));
+//            return n;
+//        }
 
         // ---- If / else ----
 
@@ -235,10 +332,33 @@ public class Main {
 
         // ---- Loops ----
 
-        @Override public Visitable visit(WhileStmt n, Void a)   { super.visit(n, a); instrumentLoop(n, (BlockStmt) n.getBody()); return n; }
-        @Override public Visitable visit(DoStmt n, Void a)      { super.visit(n, a); instrumentLoop(n, (BlockStmt) n.getBody()); return n; }
-        @Override public Visitable visit(ForStmt n, Void a)     { super.visit(n, a); instrumentLoop(n, (BlockStmt) n.getBody()); return n; }
-        @Override public Visitable visit(ForEachStmt n, Void a) { super.visit(n, a); instrumentLoop(n, (BlockStmt) n.getBody()); return n; }
+        @Override
+        public Visitable visit(WhileStmt n, Void a) {
+            super.visit(n, a);
+            instrumentLoop(n, (BlockStmt) n.getBody());
+            return n;
+        }
+
+        @Override
+        public Visitable visit(DoStmt n, Void a) {
+            super.visit(n, a);
+            instrumentLoop(n, (BlockStmt) n.getBody());
+            return n;
+        }
+
+        @Override
+        public Visitable visit(ForStmt n, Void a) {
+            super.visit(n, a);
+            instrumentLoop(n, (BlockStmt) n.getBody());
+            return n;
+        }
+
+        @Override
+        public Visitable visit(ForEachStmt n, Void a) {
+            super.visit(n, a);
+            instrumentLoop(n, (BlockStmt) n.getBody());
+            return n;
+        }
 
         private void instrumentLoop(Statement loopStmt, BlockStmt body) {
             body.addStatement(0, parseCall("_LOOP_BODY"));
@@ -306,7 +426,9 @@ public class Main {
             return n;
         }
 
-        /** Best-effort check: does control flow always leave {@code s} via return/throw? */
+        /**
+         * Best-effort check: does control flow always leave {@code s} via return/throw?
+         */
         private static boolean alwaysExits(Statement s) {
             if (s instanceof ReturnStmt) return true;
             if (s instanceof ThrowStmt) return true;
