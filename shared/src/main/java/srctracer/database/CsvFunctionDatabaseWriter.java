@@ -1,5 +1,7 @@
 package srctracer.database;
 
+import srctracer.util.FunctionSignature;
+
 import java.io.BufferedOutputStream;
 import java.io.PrintWriter;
 import java.nio.file.Files;
@@ -18,8 +20,8 @@ public class CsvFunctionDatabaseWriter implements FunctionDatabaseWriter {
     }
 
     @Override
-    public void storeFunctionId(int id, String canonicalMethodSignature) {
-        writer.println(id + "," + canonicalMethodSignature);
+    public void storeFunctionId(int id, FunctionSignature signature) {
+        writer.println(id + "," + signature);
     }
 
     @Override

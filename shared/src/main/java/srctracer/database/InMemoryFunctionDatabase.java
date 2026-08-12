@@ -1,5 +1,7 @@
 package srctracer.database;
 
+import srctracer.util.FunctionSignature;
+
 import java.util.HashMap;
 import java.util.Map;
 
@@ -8,8 +10,8 @@ public class InMemoryFunctionDatabase implements FunctionDatabaseReader, Functio
     private final Map<Integer, String> functionMap = new HashMap<>();
 
     @Override
-    public void storeFunctionId(int id, String canonicalMethodSignature) {
-        functionMap.put(id, canonicalMethodSignature);
+    public void storeFunctionId(int id, FunctionSignature functionSignature) {
+        functionMap.put(id, functionSignature.signatureString());
     }
 
     @Override

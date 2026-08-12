@@ -1,9 +1,25 @@
 package srctracer.util;
 
+import com.github.javaparser.StaticJavaParser;
+import com.github.javaparser.ast.Node;
+import com.github.javaparser.ast.body.ConstructorDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.body.TypeDeclaration;
+import com.github.javaparser.ast.expr.LambdaExpr;
+import com.github.javaparser.ast.stmt.BlockStmt;
+import com.github.javaparser.ast.stmt.BreakStmt;
+import com.github.javaparser.ast.stmt.DoStmt;
+import com.github.javaparser.ast.stmt.ForEachStmt;
+import com.github.javaparser.ast.stmt.ForStmt;
+import com.github.javaparser.ast.stmt.Statement;
+import com.github.javaparser.ast.stmt.SwitchEntry;
+import com.github.javaparser.ast.stmt.SwitchStmt;
+import com.github.javaparser.ast.stmt.WhileStmt;
 import com.github.javaparser.ast.type.ArrayType;
+import com.github.javaparser.ast.type.Type;
+import srctracer.trace.TracerMethod;
 
+import java.util.Optional;
 import java.util.stream.Collectors;
 
 public class JavaParserUtil {
@@ -28,7 +44,7 @@ public class JavaParserUtil {
                 .collect(Collectors.joining(";"));
     }
 
-    public static String typeToDescriptor(com.github.javaparser.ast.type.Type type) {
+    public static String typeToDescriptor(Type type) {
         String baseType;
         int arrayDimensions = 0;
 
@@ -60,5 +76,70 @@ public class JavaParserUtil {
         }
 
         return "[".repeat(arrayDimensions) + baseType;
+    }
+
+    public static Statement parseTracerCall(TracerMethod method, Object... args) {
+        return parseStatement(method.getMethodCallString(args));
+    }
+
+    public static Statement parseStatement(String code) {
+        return StaticJavaParser.parseStatement(code);
+    }
+
+    public static void insertBefore(Node n, Statement newStmt) {
+        Node parent = n.getParentNode().orElse(null);
+        if (parent instanceof BlockStmt block) {
+            int idx = block.getStatements().indexOf(n);
+            if (idx >= 0) block.addStatement(idx, newStmt);
+        } else if (parent instanceof SwitchEntry entry) {
+            int idx = entry.getStatements().indexOf(n);
+            if (idx >= 0) entry.getStatements().add(idx, newStmt);
+        }
+    }
+
+    public static void insertAfter(Node n, Statement newStmt) {
+        Node parent = n.getParentNode().orElse(null);
+        if (parent instanceof BlockStmt block) {
+            int idx = block.getStatements().indexOf(n);
+            if (idx >= 0) block.addStatement(idx + 1, newStmt);
+        } else if (parent instanceof SwitchEntry entry) {
+            int idx = entry.getStatements().indexOf(n);
+            if (idx >= 0) entry.getStatements().add(idx + 1, newStmt);
+        }
+    }
+
+    public static boolean isInsideLambda(Node n) {
+        Node cur = n.getParentNode().orElse(null);
+        while (cur != null) {
+            if (cur instanceof LambdaExpr) return true;
+            if (cur instanceof MethodDeclaration) return false;
+            if (cur instanceof ConstructorDeclaration) return false;
+            cur = cur.getParentNode().orElse(null);
+        }
+        return false;
+    }
+
+    public static boolean isBreakForSwitch(BreakStmt n) {
+        Node cur = n.getParentNode().orElse(null);
+        while (cur != null) {
+            if (cur instanceof SwitchStmt) return true;
+            if (cur instanceof WhileStmt
+                    || cur instanceof DoStmt
+                    || cur instanceof ForStmt
+                    || cur instanceof ForEachStmt) return false;
+            cur = cur.getParentNode().orElse(null);
+        }
+        return false;
+    }
+
+    public static Optional<Type> findEnclosingReturnType(Node n) {
+        Node cur = n.getParentNode().orElse(null);
+        while (cur != null) {
+            if (cur instanceof MethodDeclaration md) return Optional.of(md.getType());
+            if (cur instanceof ConstructorDeclaration) return Optional.empty();
+            if (cur instanceof LambdaExpr) return Optional.empty();
+            cur = cur.getParentNode().orElse(null);
+        }
+        return Optional.empty();
     }
 }
