@@ -16,6 +16,7 @@ import com.github.javaparser.ast.stmt.BlockStmt;
 import srctracer.SourceTransformer;
 import srctracer.database.FunctionDatabaseWriter;
 import srctracer.instrumenter.visitors.BlockWrappingVisitor;
+import srctracer.instrumenter.visitors.ImplicitExceptionVisitor;
 import srctracer.instrumenter.visitors.InstrumenterVisitor;
 
 import java.util.ArrayList;
@@ -32,10 +33,13 @@ public class Instrumenter extends SourceTransformer {
     @Override
     protected void performTransformation(CompilationUnit cu) {
         cu.accept(new BlockWrappingVisitor(), null);
+
+        // TODO clenaup als visitor?
         extractFieldInitializers(cu);
 
         InstrumenterVisitor v = new InstrumenterVisitor(functionDatabaseWriter);
         cu.accept(v, null);
+        cu.accept(new ImplicitExceptionVisitor(), null);
 
         System.out.println(v.getStats().getStatsSummary());
     }

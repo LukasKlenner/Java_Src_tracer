@@ -13,6 +13,8 @@ public enum TracerMethod {
     TRY("_TRY", 0, new Class<?>[0]),
     TRY_END("_TRY_END", 0, new Class<?>[0]),
     CATCH("_CATCH", 1, new Class<?>[]{Integer.class}),
+    IMPLICIT_EXCEPTION("_IMPLICIT_EXCEPTION", 0, new Class<?>[0]),
+    NO_IMPLICIT_EXCEPTION("_NO_IMPLICIT_EXCEPTION", 0, new Class<?>[0]),
     TRACE_START("trace_start", 1, new Class<?>[]{String.class}),
     TRACE_END("trace_end", 0, new Class<?>[0]);
 
