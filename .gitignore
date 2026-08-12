@@ -2,6 +2,7 @@
 build/
 *.class
 trace-out/
+key-out/
 .idea/
 *.iml
 .vscode/

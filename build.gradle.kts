@@ -7,11 +7,22 @@ allprojects {
     }
 }
 
+plugins {
+    application
+}
+
+java {
+    toolchain {
+        languageVersion.set(JavaLanguageVersion.of(21))
+    }
+}
+
 dependencies {
     implementation(project(":instrumenter"))
     implementation(project(":key-annotater"))
+    implementation(project(":shared"))
 }
 
-plugins {
-    application
+application {
+    mainClass.set("Main")
 }

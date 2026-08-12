@@ -1,19 +1,16 @@
 package srctracer;
 
-import srctracer.trace.TextTraceConstants;
-
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.OutputStreamWriter;
+import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 
-import static srctracer.trace.TextTraceConstants.*;
-
 public final class Trace {
 
-    private static OutputStreamWriter out;
+    private static Writer out;
     private static boolean breakBefore = false;
 
     private static final String OUT_DIR = "trace-out/";
@@ -26,13 +23,13 @@ public final class Trace {
         }
     }
 
-    public static void _FUNC(int id) { write(TEXT_CALL + Integer.toHexString(id)); }
-    public static void _IF()         { write(TEXT_IF); }
-    public static void _ELSE()       { write(TEXT_ELSE); }
-    public static void _LOOP_BODY()  { if (!breakBefore) write(TEXT_IF); breakBefore = false; }
-    public static void _LOOP_END()   { if (!breakBefore) write(TEXT_ELSE); breakBefore = false; }
+    public static void _FUNC(int id) { write("C" + Integer.toHexString(id)); }
+    public static void _IF()         { write("I"); }
+    public static void _ELSE()       { write("O"); }
+    public static void _LOOP_BODY()  { if (!breakBefore) write("I"); breakBefore = false; }
+    public static void _LOOP_END()   { if (!breakBefore) write("O"); breakBefore = false; }
     public static void _BREAK()      { breakBefore = true; }
-    public static void _RETURN()     { write(TEXT_RETURN); }
+    public static void _RETURN()     { write("R"); }
 
     /**
      * Records which case of a switch was taken, as a fixed 6-bit value (MSB-first)
@@ -44,11 +41,16 @@ public final class Trace {
         }
     }
 
-    public static void _TRY()             { write(TEXT_TRY); }
-    public static void _TRY_END()         { write(TEXT_TRY_END); }
-    public static void _CATCH(int idx)    { write(TEXT_CATCH + Integer.toHexString(idx)); }
+    public static void _TRY()             { write("T"); }
+    public static void _TRY_END()         { write("U"); }
+    public static void _CATCH(int idx)    { write("J" + Integer.toHexString(idx)); }
+
+    public static void trace_start(Writer writer) {
+        out = writer;
+    }
 
     public static void trace_start(String programName) {
+        if (out != null) return;
         LocalDateTime now = LocalDateTime.now();
         DateTimeFormatter fmt = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH.mm.ss.nnnnnnnnn");
         String fileName = programName + "_" + now.format(fmt) + ".trace.txt";

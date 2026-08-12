@@ -2,10 +2,9 @@ package srctracer;
 
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.OutputStream;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-
-import static srctracer.trace.ByteTraceConstants.*;
 
 /**
  * Binary-mode trace runtime.  Same public API as the text-mode {@code srctracer.Trace};
@@ -16,6 +15,19 @@ import static srctracer.trace.ByteTraceConstants.*;
  */
 public final class Trace {
 
+    // Byte-level constants from trace_elem.h
+    private static final int FUNC_4    = 0x00;
+    private static final int FUNC_12   = 0x10;
+    private static final int FUNC_20   = 0x20;
+    private static final int FUNC_28   = 0x30;
+    private static final int FUNC_32   = 0x43; // 'C'
+    private static final int FUNC_ANON = 0x41; // 'A'
+    private static final int END       = 0x45; // 'E'
+    private static final int RETURN    = 0x52; // 'R'
+    private static final int TRY       = 0x54; // 'T'
+    private static final int CATCH_T   = 0x68; // ELEM2 CATCH
+    private static final int LEN_16    = 0x02;
+    private static final int IE_INIT   = 0xFE;
 
     private static final int IE_FLUSH_THRESHOLD = 0xC0;
 
@@ -27,7 +39,7 @@ public final class Trace {
     private static int ieByte = IE_INIT;
     private static boolean breakBefore = false;
 
-    private static FileOutputStream out;
+    private static OutputStream out;
 
     // ---- low-level byte buffer ----
 
@@ -154,7 +166,13 @@ public final class Trace {
 
     // ---- file lifecycle ----
 
+    public static void trace_start(OutputStream stream) {
+        out = stream;
+    }
+
     public static void trace_start(String programName) {
+        if (out != null) return;
+
         LocalDateTime now = LocalDateTime.now();
         DateTimeFormatter fmt = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH.mm.ss.nnnnnnnnn");
         String fileName = programName + "_" + now.format(fmt) + ".trace";

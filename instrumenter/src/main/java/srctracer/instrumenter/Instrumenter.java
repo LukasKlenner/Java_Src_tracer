@@ -10,6 +10,7 @@ import com.github.javaparser.ast.body.ConstructorDeclaration;
 import com.github.javaparser.ast.body.FieldDeclaration;
 import com.github.javaparser.ast.body.InitializerDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
+import com.github.javaparser.ast.body.Parameter;
 import com.github.javaparser.ast.body.TypeDeclaration;
 import com.github.javaparser.ast.body.VariableDeclarator;
 import com.github.javaparser.ast.expr.Expression;
@@ -32,43 +33,44 @@ import com.github.javaparser.ast.stmt.ThrowStmt;
 import com.github.javaparser.ast.stmt.TryStmt;
 import com.github.javaparser.ast.stmt.WhileStmt;
 import com.github.javaparser.ast.type.Type;
+import com.github.javaparser.ast.type.VoidType;
 import com.github.javaparser.ast.visitor.ModifierVisitor;
 import com.github.javaparser.ast.visitor.Visitable;
+import srctracer.SourceTransformer;
+import srctracer.database.FunctionDatabaseWriter;
 
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
-public class Instrumenter {
+import static srctracer.util.JavaParserUtil.isMainMethod;
 
-    public void instrument(Path input, Path output) throws IOException {
-        CompilationUnit cu = StaticJavaParser.parse(input);
+public class Instrumenter extends SourceTransformer {
 
-        // Pass 1: wrap single-statement loop/conditional bodies in BlockStmt so
-        // sibling-insertion (needed for _LOOP_END) works in pass 2.
+    private final FunctionDatabaseWriter functionDatabaseWriter;
+
+    public Instrumenter(FunctionDatabaseWriter functionDatabaseWriter) {
+        this.functionDatabaseWriter = functionDatabaseWriter;
+    }
+
+    @Override
+    protected void performTransformation(CompilationUnit cu) {
         cu.accept(new BlockWrappingVisitor(), null);
-
-        // Pass 1.5: extract field initializers with method calls into
-        // initializer blocks so they get instrumented in pass 2.
         extractFieldInitializers(cu);
 
-        // Pass 2: actual trace-call insertion.
         InstrumenterVisitor v = new InstrumenterVisitor();
         cu.accept(v, null);
 
-        Files.writeString(output, cu.toString());
-        System.out.println("Wrote: " + output
-                + " (" + v.methods + " methods, "
+        System.out.println("Stats: " +
+                v.methods + " methods, "
                 + v.initializers + " initializers, "
                 + v.ifs + " if, "
                 + v.returns + " return, "
                 + v.loops + " loop, "
                 + v.switches + " switch, "
                 + v.tries + " try, "
-                + v.mains + " main wrapped)");
+                + v.mains + " main wrapped");
     }
 
     /**
@@ -162,7 +164,7 @@ public class Instrumenter {
         }
     }
 
-    private static class InstrumenterVisitor extends ModifierVisitor<Void> {
+    private class InstrumenterVisitor extends ModifierVisitor<Void> {
         int nextFuncId = 1;
         int nextSwitchId = 0;
         int nextTmpId = 0;
@@ -181,19 +183,24 @@ public class Instrumenter {
         @Override
         public Visitable visit(MethodDeclaration md, Void a) {
             super.visit(md, a);
+
+            // TODO Methoden mit leerer Implementation machen es kaputt?
             if (md.getBody().isEmpty()) return md;
 
-            int funcId = nextFuncId++;
-            methods++;
-            Statement funcCall = parseStatement(
-                    "srctracer.Trace._FUNC(" + funcId + ");");
+            insertFuncCall(
+                    md.getBody().get(),
+                    (TypeDeclaration<?>) md.getParentNode().get(),
+                    md.getNameAsString(),
+                    md.getParameters(),
+                    md.getType(),
+                    0
+            );
 
             if (isMainMethod(md)) {
-                wrapMainWithLifecycle(md, funcCall);
+                wrapMainWithLifecycle(md);
                 mains++;
-            } else {
-                md.getBody().get().addStatement(0, funcCall);
             }
+
             return md;
         }
 
@@ -203,12 +210,11 @@ public class Instrumenter {
          * try { _FUNC(id); <original statements...> }
          * finally { trace_end(); }
          */
-        private void wrapMainWithLifecycle(MethodDeclaration md, Statement funcCall) {
+        private void wrapMainWithLifecycle(MethodDeclaration md) {
             BlockStmt original = md.getBody().get();
             String name = enclosingTypeName(md);
 
             BlockStmt tryBlock = new BlockStmt();
-            tryBlock.addStatement(funcCall);
             for (Statement s : original.getStatements()) {
                 tryBlock.addStatement(s.clone());
             }
@@ -228,15 +234,6 @@ public class Instrumenter {
             md.setBody(newBody);
         }
 
-        private static boolean isMainMethod(MethodDeclaration md) {
-            if (!md.getNameAsString().equals("main")) return false;
-            if (!md.isStatic()) return false;
-            if (!md.getType().toString().equals("void")) return false;
-            if (md.getParameters().size() != 1) return false;
-            String pt = md.getParameter(0).getType().toString();
-            return pt.equals("String[]") || pt.equals("java.lang.String[]");
-        }
-
         private static String enclosingTypeName(MethodDeclaration md) {
             Node cur = md.getParentNode().orElse(null);
             while (cur != null) {
@@ -253,7 +250,14 @@ public class Instrumenter {
             int idx = !body.getStatements().isEmpty()
                     && body.getStatement(0) instanceof ExplicitConstructorInvocationStmt
                     ? 1 : 0;
-            insertFuncCall(body, idx);
+            insertFuncCall(
+                    body,
+                    (TypeDeclaration<?>) cd.getParentNode().get(),
+                    cd.getNameAsString(),
+                    cd.getParameters(),
+                    new VoidType(),
+                    idx
+            );
             return cd;
         }
 
@@ -438,11 +442,42 @@ public class Instrumenter {
 
         // ---- Helpers ----
 
-        private void insertFuncCall(BlockStmt body, int index) {
+        private void insertFuncCall(
+                BlockStmt body,
+                TypeDeclaration<?> declaringType,
+                String methodName,
+                List<Parameter> parameters,
+                Type returnType,
+                int index
+        ) {
             int id = nextFuncId++;
             methods++;
             body.addStatement(index, parseStatement(
                     "srctracer.Trace._FUNC(" + id + ");"));
+
+            String signature = buildSignature(declaringType, methodName, parameters, returnType);
+
+            functionDatabaseWriter.storeFunctionId(id, signature);
+        }
+
+        private static String buildSignature(
+                TypeDeclaration<?> declaringType,
+                String methodName,
+                List<Parameter> parameters,
+                Type returnType
+        ) {
+
+            String parameterTypes = parameters.stream()
+                    .map(p -> p.getType().asString())
+                    .collect(Collectors.joining(","));
+
+            return String.format(
+                    "%s#%s(%s):%s",
+                    declaringType.getFullyQualifiedName().get(),
+                    methodName,
+                    parameterTypes,
+                    returnType.asString()
+            );
         }
 
         private static Statement parseCall(String method) {
