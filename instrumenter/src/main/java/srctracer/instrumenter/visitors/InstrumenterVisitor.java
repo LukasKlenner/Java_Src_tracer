@@ -63,6 +63,8 @@ public class InstrumenterVisitor extends ModifierVisitor<Void> {
         // TODO Methoden mit leerer Implementation machen es kaputt?
         if (md.getBody().isEmpty()) return md;
 
+        // TODO keine private, static, etc Methoden tracen
+
         FunctionSignature signature = new FunctionSignature(
                 (TypeDeclaration<?>) md.getParentNode().get(),
                 md.getNameAsString(),
@@ -126,6 +128,7 @@ public class InstrumenterVisitor extends ModifierVisitor<Void> {
     public Visitable visit(ConstructorDeclaration cd, Void a) {
         super.visit(cd, a);
 
+        // TODO eigentlich nicht tracen, oder?
         BlockStmt body = cd.getBody();
         FunctionSignature signature = new FunctionSignature(
                 (TypeDeclaration<?>) cd.getParentNode().get(),

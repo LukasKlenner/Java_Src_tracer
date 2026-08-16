@@ -1,7 +1,6 @@
 import srctracer.KeyAnnotater;
 import srctracer.database.CsvFunctionDatabaseWriter;
 import srctracer.database.FunctionDatabaseWriter;
-import srctracer.database.InMemoryFunctionDatabase;
 import srctracer.instrumenter.Instrumenter;
 
 import javax.tools.JavaCompiler;
@@ -38,6 +37,8 @@ public class Main {
             """;
 
     public static final String DEFAULT_FUNCTION_DB_NAME = "functions.csv";
+    public static final String DEFAULT_TRACE_OUTPUT_DIR = "trace-out";
+    public static final String DEFAULT_KEY_OUTPUT_DIR = "key-out";
 
     public static void main(String[] args) throws Exception {
         if (args.length == 0) {
@@ -101,7 +102,7 @@ public class Main {
         TraceArgs parsed = parseTraceArgs(args, "trace");
 
         String instrumentedSource;
-        try (FunctionDatabaseWriter dbWriter = new CsvFunctionDatabaseWriter(Path.of("trace-out", DEFAULT_FUNCTION_DB_NAME))) {
+        try (FunctionDatabaseWriter dbWriter = new CsvFunctionDatabaseWriter(Path.of(DEFAULT_TRACE_OUTPUT_DIR, DEFAULT_FUNCTION_DB_NAME))) {
             Instrumenter instrumenter = new Instrumenter(dbWriter);
 
             instrumentedSource = instrumenter.transformToString(parsed.input);
@@ -129,10 +130,14 @@ public class Main {
     private static void annotate(String[] args) throws Exception {
         TraceArgs parsed = parseTraceArgs(args, "annotate");
 
-        InMemoryFunctionDatabase functionDatabase = new InMemoryFunctionDatabase();
-        Instrumenter instrumenter = new Instrumenter(functionDatabase);
+        String instrumentedSource;
+        Path functionDatabaseFile = Path.of(DEFAULT_KEY_OUTPUT_DIR, DEFAULT_FUNCTION_DB_NAME);
+        try (FunctionDatabaseWriter dbWriter = new CsvFunctionDatabaseWriter(functionDatabaseFile)) {
+            Instrumenter instrumenter = new Instrumenter(dbWriter);
 
-        String instrumentedSource = instrumenter.transformToString(parsed.input);
+            instrumentedSource = instrumenter.transformToString(parsed.input);
+        }
+
 
         String className = classNameFrom(parsed.input);
         Path runtimeJar = resolveRuntimeJar(parsed.binary);
@@ -161,17 +166,17 @@ public class Main {
 
             traceClass.getMethod("trace_end").invoke(null);
 
-            Path traceOutput = Path.of("trace-out", className + ".trace" + (parsed.binary ? "" : ".txt"));
+            Path traceFile = Path.of(DEFAULT_KEY_OUTPUT_DIR, className + ".trace" + (parsed.binary ? "" : ".txt"));
             if (memoryTarget instanceof StringWriter sw) {
-                Files.createDirectories(traceOutput.getParent());
-                Files.writeString(traceOutput, sw.toString());
+                Files.createDirectories(traceFile.getParent());
+                Files.writeString(traceFile, sw.toString());
             } else {
                 ByteArrayOutputStream baos = (ByteArrayOutputStream) memoryTarget;
-                Files.createDirectories(traceOutput.getParent());
-                Files.write(traceOutput, baos.toByteArray());
+                Files.createDirectories(traceFile.getParent());
+                Files.write(traceFile, baos.toByteArray());
             }
 
-            KeyAnnotater.annotate(parsed.input, Path.of("key-out"), traceOutput, functionDatabase);
+            KeyAnnotater.annotate(parsed.input, Path.of(DEFAULT_KEY_OUTPUT_DIR), traceFile, functionDatabaseFile);
             System.out.println("Annotation complete.");
         } finally {
             deleteRecursive(tempDir);
