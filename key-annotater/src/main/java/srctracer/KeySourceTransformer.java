@@ -16,21 +16,7 @@ import static srctracer.util.JavaParserUtil.isMainMethod;
 
 public class KeySourceTransformer extends SourceTransformer {
 
-    private final Trace trace;
-
-    private final FunctionDatabaseReader functionDatabaseReader;
-
     private MethodDeclaration tracedMethod;
-
-    public KeySourceTransformer(Path traceFile, FunctionDatabaseReader functionDatabaseReader) throws IOException {
-        this.trace = Trace.parseTrace(traceFile);
-        this.functionDatabaseReader = functionDatabaseReader;
-    }
-
-    public KeySourceTransformer(String traceContent, FunctionDatabaseReader functionDatabaseReader) {
-        this.trace = Trace.parseTraceFromString(traceContent);
-        this.functionDatabaseReader = functionDatabaseReader;
-    }
 
     @Override
     protected void performTransformation(CompilationUnit compilationUnit) {
@@ -61,19 +47,6 @@ public class KeySourceTransformer extends SourceTransformer {
 
             JmlJavadocCommentBuilder builder = new JmlJavadocCommentBuilder();
             builder.setIsNormalBehaviour(true);
-
-            builder.addRequires("tracer.Trace.index == 0");
-            TraceElement[] elementsForRequired = Arrays.stream(trace.getElements())
-                    .filter(TraceElement::createsRequiresString)
-                    .filter(traceElement -> !(traceElement instanceof TraceElement.Call(int functionId) && functionDatabaseReader.isMainFunction(functionId)))
-                    .toArray(TraceElement[]::new);
-
-            for (int i = 0; i < elementsForRequired.length; i++) {
-                builder.addRequires(elementsForRequired[i].asRequiresString(i, functionDatabaseReader));
-            }
-
-
-            builder.addEnsures("tracer.Trace.index == " + elementsForRequired.length);
 
             builder.addAssignable("\\everything");
 

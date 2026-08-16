@@ -23,24 +23,22 @@ class C extends A {
 
 class Inheritance {
     public static void main(String[] args) {
-//        A a = new A();
-//        B b = new B();
-//        C c = new C();
-//
-//        A[] arr = new A[] {a, b, c};
-//
-//        int sum = 0;
-//        for (int i = 0; i < arr.length; i++) {
-//            sum += arr[i].getNumber();
-//        }
-//        System.out.println("Sum: " + sum);
+        A a = new A();
+        B b = new B();
+        C c = new C();
 
-        A a = new C();
+        A[] arr = new A[]{a, b, c};
 
-        if (a == null) {
-            return;
+        int result = 0;
+
+        for (int i = 0; i < arr.length; i++) {
+            result += arr[i].getNumber();
         }
 
-        a.getNumber();
+        if (result == 6) {
+            return;
+        } else {
+            throw new RuntimeException("Unexpected result: " + result);
+        }
     }
 }

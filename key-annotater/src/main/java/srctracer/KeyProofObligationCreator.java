@@ -14,8 +14,18 @@ public class KeyProofObligationCreator {
 
     public static void createProofObligation(
             Path outputDir,
-            MethodDeclaration tracedMethod
+            MethodDeclaration tracedMethod,
+            Path traceFile,
+            Path functionDatabaseFile
     ) throws IOException {
+
+        if (!traceFile.startsWith(outputDir)) {
+            throw new IllegalArgumentException("Trace file must be inside the output directory");
+        }
+
+        if (!functionDatabaseFile.startsWith(outputDir)) {
+            throw new IllegalArgumentException("Function database file must be inside the output directory");
+        }
 
         String qualifiedClass = getQualifiedClassName(tracedMethod);
         String paramDescriptor = getParamDescriptor(tracedMethod);
@@ -26,7 +36,12 @@ public class KeyProofObligationCreator {
                 qualifiedClass, qualifiedClass, methodName, paramDescriptor);
 
         String keyFile = String.format(PROOF_OBLIGATION_TEMPLATE,
-                JAVA_SOURCE_DIR, contract, contract);
+                JAVA_SOURCE_DIR,
+                outputDir.relativize(traceFile),
+                outputDir.relativize(functionDatabaseFile),
+                contract,
+                contract
+        );
 
 
         Files.createDirectories(outputDir);
@@ -40,7 +55,7 @@ public class KeyProofObligationCreator {
      * - method expansion: no_restriction
      */
     private static final String PROOF_OBLIGATION_TEMPLATE = """
-            \\profile "Java Profile";
+            \\profile "Java Profile with Tracing";
             
              \\settings // Proof-Settings-Config-File
              {
@@ -118,6 +133,9 @@ public class KeyProofObligationCreator {
               }
             
              \\javaSource "%s";
+            
+              \\traceFile "%s";
+              \\traceFunctionDB "%s";
             
              \\proofObligation
              // Proof-Obligation settings
