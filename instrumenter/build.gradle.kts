@@ -12,5 +12,5 @@ java {
 
 dependencies {
     implementation(project(":shared"))
-    implementation("com.github.javaparser:javaparser-core:3.26.4")
+    implementation("com.github.javaparser:javaparser-symbol-solver-core:3.26.4")
 }

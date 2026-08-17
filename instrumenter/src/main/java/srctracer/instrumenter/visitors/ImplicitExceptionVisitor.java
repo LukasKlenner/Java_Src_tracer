@@ -115,12 +115,11 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
 
     private Expression rewriteExpr(Expression expr, List<Statement> prefix) {
         if (expr instanceof MethodCallExpr mce) {
-            // Rewrite arguments first (left-to-right evaluation order)
             mce.setArguments(rewriteExprList(mce.getArguments(), prefix));
 
-            if (mce.getScope().isPresent()) {
+            if (mce.getScope().isPresent() && !isStaticMethodCall(mce)) {
                 Expression scope = rewriteExpr(mce.getScope().get(), prefix);
-                scope = extractToTmp(scope, prefix);  // only if complex
+                scope = extractToTmp(scope, prefix);
                 if (!isNullSafe(scope)) {
                     emitNullGuard(scope, prefix);
                 }
@@ -130,6 +129,9 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
         }
 
         if (expr instanceof FieldAccessExpr fae) {
+            if (isStaticFieldOrTypeRef(fae)) {
+                return fae;
+            }
             Expression scope = rewriteExpr(fae.getScope(), prefix);
             scope = extractToTmp(scope, prefix);
             if (!isNullSafe(scope)) {
@@ -163,9 +165,11 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
         if (expr instanceof AssignExpr ae) {
             Expression target = ae.getTarget();
             if (target instanceof FieldAccessExpr fae) {
-                Expression scope = extractToTmp(rewriteExpr(fae.getScope(), prefix), prefix);
-                if (!isNullSafe(scope)) emitNullGuard(scope, prefix);
-                fae.setScope(scope);
+                if (!isStaticFieldOrTypeRef(fae)) {
+                    Expression scope = extractToTmp(rewriteExpr(fae.getScope(), prefix), prefix);
+                    if (!isNullSafe(scope)) emitNullGuard(scope, prefix);
+                    fae.setScope(scope);
+                }
                 ae.setValue(rewriteExpr(ae.getValue(), prefix));
             } else if (target instanceof ArrayAccessExpr aae) {
                 Expression arr = extractToTmp(rewriteExpr(aae.getName(), prefix), prefix);
@@ -236,7 +240,6 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
     }
 
 
-
     private NodeList<Expression> rewriteExprList(NodeList<Expression> exprs, List<Statement> prefix) {
         NodeList<Expression> result = new NodeList<>();
         for (Expression e : exprs) result.add(rewriteExpr(e, prefix));
@@ -253,48 +256,60 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
         return parseExpression(tmp);
     }
 
-    // Static calls and this/super references can never NPE on the receiver
     private boolean isNullSafe(Expression scope) {
-        return switch (scope) {
-            case ThisExpr thisExpr -> true;
-            case SuperExpr superExpr -> true;
+        return scope instanceof ThisExpr || scope instanceof SuperExpr;
+    }
 
-            // TODO properly check for static references (e.g., ClassName.staticMethod())
-            case NameExpr nameExpr -> Character.isUpperCase(nameExpr.getNameAsString().charAt(0));
-            default -> false;
-        };
+    private boolean isStaticMethodCall(MethodCallExpr mce) {
+        try {
+            return mce.resolve().isStatic();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private boolean isStaticFieldOrTypeRef(FieldAccessExpr fae) {
+        try {
+            //return fae.resolve().isStatic();
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private void emitNullGuard(Expression scope, List<Statement> prefix) {
         prefix.add(parseStatement(
-                "if (" + scope + " == null) { " + TracerMethod.IMPLICIT_EXCEPTION.getMethodCallString() + " } " +
-                        "else { " + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() + "; }")
+                "if (" + scope + " == null) { " + TracerMethod.IMPLICIT_EXCEPTION.getMethodCallString() + " throw new java.lang.NullPointerException(); } " +
+                        "else { " + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() + " }")
         );
     }
 
     private void emitArrayGuard(Expression arr, Expression idx, List<Statement> prefix) {
-        prefix.add(parseStatement(
-                "if (" + arr + " == null) { " + TracerMethod.IMPLICIT_EXCEPTION.getMethodCallString() + " } " +
-                        "else if (" + idx + " < 0 || " + idx + " >= " + arr + ".length) { " + TracerMethod.IMPLICIT_EXCEPTION.getMethodCallString() + " } " +
-                        "else { " + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() + "; }"));
+        prefix.addAll(List.of(
+                parseStatement(
+                        "if (" + arr + " == null) { " + TracerMethod.IMPLICIT_EXCEPTION.getMethodCallString() + " throw new java.lang.NullPointerException(); } " +
+                                "else { " + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() + " } "),
+                parseStatement(
+                        "if (" + idx + " < 0 || " + idx + " >= " + arr + ".length) { " + TracerMethod.IMPLICIT_EXCEPTION.getMethodCallString() + " throw new java.lang.ArrayIndexOutOfBoundsException(); } " +
+                                "else { " + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() + " }"))
+        );
     }
 
     private void emitDivGuard(Expression divisor, List<Statement> prefix) {
         prefix.add(parseStatement(
-                "if (" + divisor + " == 0) { " + TracerMethod.IMPLICIT_EXCEPTION.getMethodCallString() + " } " +
-                        "else { " + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() + "; }"));
+                "if (" + divisor + " == 0) { " + TracerMethod.IMPLICIT_EXCEPTION.getMethodCallString() + " throw new java.lang.ArithmeticException(); } " +
+                        "else { " + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() + " }"));
     }
 
     private void emitNegArraySizeGuard(Expression size, List<Statement> prefix) {
         prefix.add(parseStatement(
-                "if (" + size + " < 0) { srctracer.Trace._EXCEPTION(\"NegativeArraySize\"); } " +
-                        "else { srctracer.Trace._NO_EXCEPTION(); }"));
+                "if (" + size + " < 0) { " + TracerMethod.IMPLICIT_EXCEPTION.getMethodCallString() + " throw new java.lang.NegativeArraySizeException(); } " +
+                        "else { " + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() + " }"));
     }
 
     private static void emitCastGuard(Expression inner, String targetType, List<Statement> prefix) {
         prefix.add(parseStatement(
-                "if (" + inner + " != null && !(" + inner + " instanceof " + targetType + ")) { " +
-                        "srctracer.Trace._EXCEPTION(\"ClassCastException\"); } " +
-                        "else { srctracer.Trace._NO_EXCEPTION(); }"));
+                "if (" + inner + " != null && !(" + inner + " instanceof " + targetType + ")) { " + TracerMethod.IMPLICIT_EXCEPTION.getMethodCallString() + " throw new java.lang.ClassCastException(); } " +
+                        "else { " + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() + " }"));
     }
 }

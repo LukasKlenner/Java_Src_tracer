@@ -13,12 +13,19 @@ import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.expr.ObjectCreationExpr;
 import com.github.javaparser.ast.stmt.BlockStmt;
+import com.github.javaparser.symbolsolver.JavaSymbolSolver;
+import com.github.javaparser.symbolsolver.resolution.typesolvers.CombinedTypeSolver;
+import com.github.javaparser.symbolsolver.resolution.typesolvers.JarTypeSolver;
+import com.github.javaparser.symbolsolver.resolution.typesolvers.JavaParserTypeSolver;
+import com.github.javaparser.symbolsolver.resolution.typesolvers.ReflectionTypeSolver;
 import srctracer.SourceTransformer;
 import srctracer.database.FunctionDatabaseWriter;
 import srctracer.instrumenter.visitors.BlockWrappingVisitor;
 import srctracer.instrumenter.visitors.ImplicitExceptionVisitor;
 import srctracer.instrumenter.visitors.InstrumenterVisitor;
 
+import java.io.IOException;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -26,8 +33,22 @@ public class Instrumenter extends SourceTransformer {
 
     private final FunctionDatabaseWriter functionDatabaseWriter;
 
-    public Instrumenter(FunctionDatabaseWriter functionDatabaseWriter) {
+    public Instrumenter(FunctionDatabaseWriter functionDatabaseWriter, List<Path> sourceRoots, List<Path> jars) throws IOException {
         this.functionDatabaseWriter = functionDatabaseWriter;
+        configureSolver(sourceRoots, jars);
+    }
+
+    private static void configureSolver(List<Path> sourceRoots, List<Path> jars) throws IOException {
+        CombinedTypeSolver typeSolver = new CombinedTypeSolver();
+        typeSolver.add(new ReflectionTypeSolver());
+        for (Path src : sourceRoots) {
+            typeSolver.add(new JavaParserTypeSolver(src));
+        }
+        for (Path jar : jars) {
+            typeSolver.add(new JarTypeSolver(jar));
+        }
+        StaticJavaParser.getParserConfiguration()
+                .setSymbolResolver(new JavaSymbolSolver(typeSolver));
     }
 
     @Override

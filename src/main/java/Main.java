@@ -87,8 +87,10 @@ public class Main {
             output = input.resolveSibling(name + ".instrumented.java");
         }
 
+        Path runtimeJar = resolveRuntimeJar(false);
+
         try (FunctionDatabaseWriter dbWriter = new CsvFunctionDatabaseWriter(output.resolveSibling(DEFAULT_FUNCTION_DB_NAME))) {
-            Instrumenter instrumenter = new Instrumenter(dbWriter);
+            Instrumenter instrumenter = new Instrumenter(dbWriter, List.of(input.getParent()), List.of(runtimeJar));
 
             instrumenter.transform(input, output);
         }
@@ -101,15 +103,16 @@ public class Main {
     private static void trace(String[] args) throws Exception {
         TraceArgs parsed = parseTraceArgs(args, "trace");
 
+        Path runtimeJar = resolveRuntimeJar(parsed.binary);
+
         String instrumentedSource;
         try (FunctionDatabaseWriter dbWriter = new CsvFunctionDatabaseWriter(Path.of(DEFAULT_TRACE_OUTPUT_DIR, DEFAULT_FUNCTION_DB_NAME))) {
-            Instrumenter instrumenter = new Instrumenter(dbWriter);
+            Instrumenter instrumenter = new Instrumenter(dbWriter, List.of(parsed.input.getParent()), List.of(runtimeJar));
 
             instrumentedSource = instrumenter.transformToString(parsed.input);
         }
 
         String className = classNameFrom(parsed.input);
-        Path runtimeJar = resolveRuntimeJar(parsed.binary);
         Path tempDir = Files.createTempDirectory("srctracer-");
 
         compile(instrumentedSource, className, tempDir, runtimeJar);
@@ -130,17 +133,18 @@ public class Main {
     private static void annotate(String[] args) throws Exception {
         TraceArgs parsed = parseTraceArgs(args, "annotate");
 
+        Path runtimeJar = resolveRuntimeJar(parsed.binary);
+
         String instrumentedSource;
         Path functionDatabaseFile = Path.of(DEFAULT_KEY_OUTPUT_DIR, DEFAULT_FUNCTION_DB_NAME);
         try (FunctionDatabaseWriter dbWriter = new CsvFunctionDatabaseWriter(functionDatabaseFile)) {
-            Instrumenter instrumenter = new Instrumenter(dbWriter);
+            Instrumenter instrumenter = new Instrumenter(dbWriter, List.of(parsed.input.getParent()), List.of(runtimeJar));
 
             instrumentedSource = instrumenter.transformToString(parsed.input);
         }
 
 
         String className = classNameFrom(parsed.input);
-        Path runtimeJar = resolveRuntimeJar(parsed.binary);
         Path tempDir = Files.createTempDirectory("srctracer-");
 
         compile(instrumentedSource, className, tempDir, runtimeJar);

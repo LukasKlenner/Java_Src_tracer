@@ -41,6 +41,9 @@ public final class Trace {
         }
     }
 
+    public static void _IMPLICIT_EXCEPTION()    { write("I"); }
+    public static void _NO_IMPLICIT_EXCEPTION() { write("O"); }
+
     public static void _TRY()             { write("T"); }
     public static void _TRY_END()         { write("U"); }
     public static void _CATCH(int idx)    { write("J" + Integer.toHexString(idx)); }
