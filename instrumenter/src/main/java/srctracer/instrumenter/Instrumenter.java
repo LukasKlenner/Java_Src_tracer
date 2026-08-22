@@ -21,7 +21,7 @@ import com.github.javaparser.symbolsolver.resolution.typesolvers.ReflectionTypeS
 import srctracer.SourceTransformer;
 import srctracer.database.FunctionDatabaseWriter;
 import srctracer.instrumenter.visitors.BlockWrappingVisitor;
-import srctracer.instrumenter.visitors.ImplicitExceptionVisitor;
+import srctracer.instrumenter.visitors.implicit.ImplicitExceptionVisitor;
 import srctracer.instrumenter.visitors.InstrumenterVisitor;
 
 import java.io.IOException;
