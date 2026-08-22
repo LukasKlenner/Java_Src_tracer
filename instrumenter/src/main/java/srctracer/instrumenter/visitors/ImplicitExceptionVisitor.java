@@ -2,16 +2,19 @@ package srctracer.instrumenter.visitors;
 
 import com.github.javaparser.ast.ArrayCreationLevel;
 import com.github.javaparser.ast.CompilationUnit;
+import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.NodeList;
 import com.github.javaparser.ast.body.VariableDeclarator;
 import com.github.javaparser.ast.expr.ArrayAccessExpr;
 import com.github.javaparser.ast.expr.ArrayCreationExpr;
+import com.github.javaparser.ast.expr.ArrayInitializerExpr;
 import com.github.javaparser.ast.expr.AssignExpr;
 import com.github.javaparser.ast.expr.BinaryExpr;
 import com.github.javaparser.ast.expr.CastExpr;
 import com.github.javaparser.ast.expr.EnclosedExpr;
 import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.expr.FieldAccessExpr;
+import com.github.javaparser.ast.expr.LiteralExpr;
 import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.expr.NameExpr;
 import com.github.javaparser.ast.expr.ObjectCreationExpr;
@@ -20,17 +23,22 @@ import com.github.javaparser.ast.expr.ThisExpr;
 import com.github.javaparser.ast.expr.UnaryExpr;
 import com.github.javaparser.ast.expr.VariableDeclarationExpr;
 import com.github.javaparser.ast.stmt.BlockStmt;
+import com.github.javaparser.ast.stmt.CatchClause;
+import com.github.javaparser.ast.stmt.DoStmt;
 import com.github.javaparser.ast.stmt.ExpressionStmt;
 import com.github.javaparser.ast.stmt.ForEachStmt;
+import com.github.javaparser.ast.stmt.ForStmt;
 import com.github.javaparser.ast.stmt.IfStmt;
 import com.github.javaparser.ast.stmt.ReturnStmt;
 import com.github.javaparser.ast.stmt.Statement;
+import com.github.javaparser.ast.stmt.SynchronizedStmt;
 import com.github.javaparser.ast.stmt.ThrowStmt;
+import com.github.javaparser.ast.stmt.WhileStmt;
+import com.github.javaparser.ast.stmt.YieldStmt;
 import com.github.javaparser.ast.visitor.ModifierVisitor;
 import com.github.javaparser.ast.visitor.Visitable;
 import srctracer.trace.TracerMethod;
 
-import java.util.ArrayList;
 import java.util.List;
 
 import static com.github.javaparser.StaticJavaParser.parseExpression;
@@ -50,266 +58,315 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
     @Override
     public Visitable visit(ExpressionStmt n, Void a) {
         super.visit(n, a);
-        List<Statement> prefix = new ArrayList<>();
-        Expression rewritten = rewriteExpr(n.getExpression(), prefix);
-        if (prefix.isEmpty()) return n;
-        BlockStmt block = new BlockStmt();
-        prefix.forEach(block::addStatement);
-        block.addStatement(new ExpressionStmt(rewritten));
-        return block;
+        addImplicitExceptionChecks(n);
+        return n;
     }
 
     @Override
     public Visitable visit(ReturnStmt n, Void a) {
         super.visit(n, a);
-        if (n.getExpression().isEmpty()) return n;
-        List<Statement> prefix = new ArrayList<>();
-        Expression rewritten = rewriteExpr(n.getExpression().get(), prefix);
-        if (prefix.isEmpty()) return n;
-        BlockStmt block = new BlockStmt();
-        prefix.forEach(block::addStatement);
-        block.addStatement(new ReturnStmt(rewritten));
-        return block;
+        addImplicitExceptionChecks(n);
+        return n;
     }
 
-    // TODO ifs are also emitted by the InstrumentedVisitor. Make sure it is not recorded twice. Maybe add comment when
-    // emitting the if in the InstrumentedVisitor and check for that comment here.
+    @Override
+    public Visitable visit(YieldStmt n, Void a) {
+        super.visit(n, a);
+        addImplicitExceptionChecks(n);
+        return n;
+    }
+
     @Override
     public Visitable visit(IfStmt n, Void a) {
         super.visit(n, a);
-        List<Statement> prefix = new ArrayList<>();
-        n.setCondition(rewriteExpr(n.getCondition(), prefix));
-        if (prefix.isEmpty()) return n;
-        BlockStmt block = new BlockStmt();
-        prefix.forEach(block::addStatement);
-        block.addStatement(n);
-        return block;
+        addImplicitExceptionChecks(n);
+        return n;
     }
 
     @Override
     public Visitable visit(ThrowStmt n, Void a) {
         super.visit(n, a);
-        List<Statement> prefix = new ArrayList<>();
-        n.setExpression(rewriteExpr(n.getExpression(), prefix));
-        if (prefix.isEmpty()) return n;
-        BlockStmt block = new BlockStmt();
-        prefix.forEach(block::addStatement);
-        block.addStatement(n);
-        return block;
+        addImplicitExceptionChecks(n);
+        return n;
     }
 
     @Override
     public Visitable visit(ForEachStmt n, Void a) {
         super.visit(n, a);
-        List<Statement> prefix = new ArrayList<>();
-        Expression iterable = extractToTmp(rewriteExpr(n.getIterable(), prefix), prefix);
-        emitNullGuard(iterable, prefix);
-        n.setIterable(iterable);
-        BlockStmt block = new BlockStmt();
-        prefix.forEach(block::addStatement);
-        block.addStatement(n);
-        return block;
+        addImplicitExceptionChecks(n);
+        return n;
     }
 
-    // TODO loop conditions
+    @Override
+    public Visitable visit(WhileStmt n, Void a) {
+        super.visit(n, a);
+        addImplicitExceptionChecks(n);
+        return n;
+    }
 
-    private Expression rewriteExpr(Expression expr, List<Statement> prefix) {
-        if (expr instanceof MethodCallExpr mce) {
-            mce.setArguments(rewriteExprList(mce.getArguments(), prefix));
+    @Override
+    public Visitable visit(ForStmt n, Void a) {
+        super.visit(n, a);
+        addImplicitExceptionChecks(n);
+        return n;
+    }
 
-            if (mce.getScope().isPresent() && !isStaticMethodCall(mce)) {
-                Expression scope = rewriteExpr(mce.getScope().get(), prefix);
-                scope = extractToTmp(scope, prefix);
-                if (!isNullSafe(scope)) {
-                    emitNullGuard(scope, prefix);
+    @Override
+    public Visitable visit(DoStmt n, Void a) {
+        super.visit(n, a);
+        addImplicitExceptionChecks(n);
+        return n;
+    }
+
+    private void addImplicitExceptionChecks(Statement stmt) {
+        NodeList<Statement> implicitExceptionChecks = switch (stmt) {
+            case ExpressionStmt es -> getImplicitExceptionChecks(es.getExpression());
+            case ReturnStmt rs -> {
+                if (rs.getExpression().isPresent()) {
+                    yield getImplicitExceptionChecks(rs.getExpression().get());
                 }
-                mce.setScope(scope);
+                yield new NodeList<>();
             }
-            return mce;
+            case YieldStmt ys -> getImplicitExceptionChecks(ys.getExpression());
+            case IfStmt is -> getImplicitExceptionChecks(is.getCondition());
+            case ThrowStmt ts -> getImplicitExceptionChecks(ts.getExpression());
+            case ForEachStmt fes -> getImplicitExceptionChecks(fes.getIterable());
+            case WhileStmt ws -> getImplicitExceptionChecks(ws.getCondition());
+            case ForStmt fs -> {
+                NodeList<Statement> checks = new NodeList<>();
+                for (Expression init : fs.getInitialization()) {
+                    checks.addAll(getImplicitExceptionChecks(init));
+                }
+                if (fs.getCompare().isPresent()) {
+                    NodeList<Statement> checksForComparison = getImplicitExceptionChecks(fs.getCompare().get());
+                    checks.addAll(checksForComparison);
+                    // TODO this also can add an var tmp = arr.length
+                    fs.getBody().asBlockStmt().getStatements().addAll(checksForComparison);
+                }
+                for (Expression update : fs.getUpdate()) {
+                    checks.addAll(getImplicitExceptionChecks(update));
+                }
+                yield checks;
+            }
+            case DoStmt ds -> getImplicitExceptionChecks(ds.getCondition());
+            default -> throw new IllegalArgumentException("Unsupported statement type: " + stmt);
+        };
+
+        if (implicitExceptionChecks.isEmpty()) {
+            return;
         }
 
-        if (expr instanceof FieldAccessExpr fae) {
-            if (isStaticFieldOrTypeRef(fae)) {
-                return fae;
-            }
-            Expression scope = rewriteExpr(fae.getScope(), prefix);
-            scope = extractToTmp(scope, prefix);
-            if (!isNullSafe(scope)) {
-                emitNullGuard(scope, prefix);
-            }
-            fae.setScope(scope);
-            return fae;
+        Node parent = stmt.getParentNode().orElse(null);
+        if (parent instanceof BlockStmt block) {
+            int index = block.getStatements().indexOf(stmt);
+            block.getStatements().addAll(index, implicitExceptionChecks);
+        } else {
+            throw new IllegalStateException("Statement is not inside a block: " + stmt);
         }
+    }
 
-        if (expr instanceof ArrayAccessExpr aae) {
-            Expression arr = rewriteExpr(aae.getName(), prefix);
-            arr = extractToTmp(arr, prefix);
-            Expression idx = rewriteExpr(aae.getIndex(), prefix);
-            idx = extractToTmp(idx, prefix);
-            // ordered: null check first, then bounds
-            emitArrayGuard(arr, idx, prefix);
-            aae.setName(arr);
-            aae.setIndex(idx);
-            return aae;
-        }
+    private NodeList<Statement> getImplicitExceptionChecks(Expression expr) {
 
-        if (expr instanceof VariableDeclarationExpr vde) {
-            for (VariableDeclarator vd : vde.getVariables()) {
-                if (vd.getInitializer().isPresent()) {
-                    vd.setInitializer(rewriteExpr(vd.getInitializer().get(), prefix));
+        NodeList<Statement> implicitExceptionChecks = new NodeList<>();
+
+        switch (expr) {
+            case MethodCallExpr mce -> {
+                for (Expression arg : mce.getArguments()) {
+                    implicitExceptionChecks.addAll(getImplicitExceptionChecks(arg));
+                }
+
+                if (!isNullSafe(mce)) {
+                    Expression extractedScope = extractExprToTmp(mce.getScope().get(), implicitExceptionChecks);
+                    addNullGuardFor(extractedScope, implicitExceptionChecks);
+
+                    mce.setScope(extractedScope);
                 }
             }
-            return vde;
-        }
+            case FieldAccessExpr fae -> {
+                Expression scope = fae.getScope();
 
-        if (expr instanceof AssignExpr ae) {
-            Expression target = ae.getTarget();
-            if (target instanceof FieldAccessExpr fae) {
-                if (!isStaticFieldOrTypeRef(fae)) {
-                    Expression scope = extractToTmp(rewriteExpr(fae.getScope(), prefix), prefix);
-                    if (!isNullSafe(scope)) emitNullGuard(scope, prefix);
-                    fae.setScope(scope);
-                }
-                ae.setValue(rewriteExpr(ae.getValue(), prefix));
-            } else if (target instanceof ArrayAccessExpr aae) {
-                Expression arr = extractToTmp(rewriteExpr(aae.getName(), prefix), prefix);
-                Expression idx = extractToTmp(rewriteExpr(aae.getIndex(), prefix), prefix);
-                emitArrayGuard(arr, idx, prefix);
+                Expression extractedScope = extractExprToTmp(scope, implicitExceptionChecks);
+                addNullGuardFor(extractedScope, implicitExceptionChecks);
+
+                fae.setScope(extractedScope);
+            }
+            case ArrayAccessExpr aae -> {
+                Expression arr = extractExprToTmp(aae.getName(), implicitExceptionChecks);
+                Expression idx = extractExprToTmp(aae.getIndex(), implicitExceptionChecks);
+
+                addArrayGuardFor(arr, idx, implicitExceptionChecks);
+
                 aae.setName(arr);
                 aae.setIndex(idx);
-                ae.setValue(rewriteExpr(ae.getValue(), prefix));
-            } else {
-                ae.setValue(rewriteExpr(ae.getValue(), prefix));
             }
-            return ae;
-        }
-
-        if (expr instanceof CastExpr ce) {
-            Expression inner = extractToTmp(rewriteExpr(ce.getExpression(), prefix), prefix);
-            String targetType = ce.getType().asString();
-            emitCastGuard(inner, targetType, prefix);
-            ce.setExpression(inner);
-            return ce;
-        }
-
-        if (expr instanceof ArrayCreationExpr ace) {
-            for (ArrayCreationLevel level : ace.getLevels()) {
-                if (level.getDimension().isPresent()) {
-                    Expression dim = extractToTmp(rewriteExpr(level.getDimension().get(), prefix), prefix);
-                    emitNegArraySizeGuard(dim, prefix);
-                    level.setDimension(dim);
+            case VariableDeclarationExpr vde -> {
+                for (VariableDeclarator vd : vde.getVariables()) {
+                    if (vd.getInitializer().isPresent()) {
+                        Expression extractedInitializer = extractExprToTmp(vd.getInitializer().get(), implicitExceptionChecks);
+                        vd.setInitializer(extractedInitializer);
+                    }
                 }
             }
-            return ace;
+            case AssignExpr ae -> {
+                Expression target = ae.getTarget();
+
+
+                if (target instanceof FieldAccessExpr fae && !isNullSafe(fae)) {
+                    Expression extractedScope = extractExprToTmp(fae.getScope(), implicitExceptionChecks);
+                    addNullGuardFor(extractedScope, implicitExceptionChecks);
+
+                    fae.setScope(extractedScope);
+                } else if (target instanceof ArrayAccessExpr aae) {
+                    Expression arr = extractExprToTmp(aae.getName(), implicitExceptionChecks);
+                    Expression idx = extractExprToTmp(aae.getIndex(), implicitExceptionChecks);
+
+                    addArrayGuardFor(arr, idx, implicitExceptionChecks);
+
+                    aae.setName(arr);
+                    aae.setIndex(idx);
+                }
+
+                Expression extractedValue = extractExprToTmp(ae.getValue(), implicitExceptionChecks);
+                ae.setValue(extractedValue);
+            }
+            case CastExpr ce -> {
+                Expression inner = extractExprToTmp(ce.getExpression(), implicitExceptionChecks);
+
+                addCastGuardFor(inner, ce.getType().asString(), implicitExceptionChecks);
+
+                ce.setExpression(inner);
+            }
+            case ArrayCreationExpr ace -> {
+                for (ArrayCreationLevel level : ace.getLevels()) {
+                    if (level.getDimension().isPresent()) {
+                        Expression dim = extractExprToTmp(level.getDimension().get(), implicitExceptionChecks);
+                        addNegArraySizeGuardFor(dim, implicitExceptionChecks);
+                        level.setDimension(dim);
+                    }
+                }
+            }
+            case ObjectCreationExpr oce -> {
+                for (Expression arg : oce.getArguments()) {
+                    implicitExceptionChecks.addAll(getImplicitExceptionChecks(arg));
+                }
+
+                // key emits two field writes who never fail
+                implicitExceptionChecks.add(parseStatement(TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString()));
+                implicitExceptionChecks.add(parseStatement(TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString()));
+            }
+            case ArrayInitializerExpr aie -> {
+                for (Expression value : aie.getValues()) {
+                    implicitExceptionChecks.addAll(getImplicitExceptionChecks(value));
+                    // key emits one array write per initialized value, which never fails
+                    implicitExceptionChecks.add(parseStatement(TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString()));
+                }
+            }
+            case BinaryExpr be -> {
+                Expression extractedLeft = extractExprToTmp(be.getLeft(), implicitExceptionChecks);
+                Expression extractedRight = extractExprToTmp(be.getRight(), implicitExceptionChecks);
+
+                if (be.getOperator() == BinaryExpr.Operator.DIVIDE
+                        || be.getOperator() == BinaryExpr.Operator.REMAINDER) {
+                    addDivGuardFor(extractedRight, implicitExceptionChecks);
+                }
+
+                be.setLeft(extractedLeft);
+                be.setRight(extractedRight);
+            }
+            case UnaryExpr ue -> {
+                Expression extractedInner = extractExprToTmp(ue.getExpression(), implicitExceptionChecks);
+                ue.setExpression(extractedInner);
+            }
+            case EnclosedExpr ee -> {
+                Expression extractedInner = extractExprToTmp(ee.getInner(), implicitExceptionChecks);
+                ee.setInner(extractedInner);
+            }
+            default -> {
+            }
         }
 
-        if (expr instanceof BinaryExpr be
-                && (be.getOperator() == BinaryExpr.Operator.DIVIDE
-                || be.getOperator() == BinaryExpr.Operator.REMAINDER)) {
-            be.setLeft(rewriteExpr(be.getLeft(), prefix));
-            Expression right = rewriteExpr(be.getRight(), prefix);
-            right = extractToTmp(right, prefix);
-            emitDivGuard(right, prefix);
-            be.setRight(right);
-            return be;
-        }
-
-        if (expr instanceof BinaryExpr be) {
-            // non-division case — division/remainder already handled above
-            be.setLeft(rewriteExpr(be.getLeft(), prefix));
-            be.setRight(rewriteExpr(be.getRight(), prefix));
-            return be;
-        }
-
-        if (expr instanceof UnaryExpr ue) {
-            ue.setExpression(rewriteExpr(ue.getExpression(), prefix));
-            return ue;
-        }
-
-        if (expr instanceof EnclosedExpr ee) {
-            ee.setInner(rewriteExpr(ee.getInner(), prefix));
-            return ee;
-        }
-
-        if (expr instanceof ObjectCreationExpr oce) {
-            oce.setArguments(rewriteExprList(oce.getArguments(), prefix));
-            return oce;
-        }
-
-        return expr;
+        return implicitExceptionChecks;
     }
 
-
-    private NodeList<Expression> rewriteExprList(NodeList<Expression> exprs, List<Statement> prefix) {
-        NodeList<Expression> result = new NodeList<>();
-        for (Expression e : exprs) result.add(rewriteExpr(e, prefix));
-        return result;
-    }
-
-    // Only extract to tmp if scope itself is complex (i.e., not already a simple name)
-    private Expression extractToTmp(Expression scope, List<Statement> prefix) {
-        if (scope instanceof NameExpr || scope instanceof ThisExpr || scope instanceof SuperExpr) {
-            return scope;
+    // Only extract to tmpExpr if expr itself is complex (i.e., not already a simple name)
+    private Expression extractExprToTmp(Expression expr, List<Statement> implicitExceptionChecks) {
+        if (expr instanceof NameExpr || expr instanceof ThisExpr || expr instanceof SuperExpr || expr instanceof LiteralExpr) {
+            return expr;
         }
-        String tmp = "__srctracer_tmp$" + nextTmpId++;
-        prefix.add(parseStatement("var " + tmp + " = " + scope + ";"));
-        return parseExpression(tmp);
+
+        implicitExceptionChecks.addAll(getImplicitExceptionChecks(expr));
+
+        String tmpName = "__srctracer_tmp$" + nextTmpId++;
+        Statement tmpAssignment = parseStatement("var " + tmpName + " = " + expr + ";");
+        implicitExceptionChecks.add(tmpAssignment);
+
+        return parseExpression(tmpName);
     }
 
-    private boolean isNullSafe(Expression scope) {
-        return scope instanceof ThisExpr || scope instanceof SuperExpr;
+    private static boolean isNullSafe(Expression expr) {
+
+        return switch (expr) {
+            case FieldAccessExpr fae -> {
+                if (fae.resolve().isField()) {
+                    yield fae.resolve().asField().isStatic();
+                }
+                yield !(fae.getScope() instanceof NameExpr ne) || !ne.resolve().getType().isArray();
+            }
+            case MethodCallExpr mce ->
+                    mce.resolve().isStatic() || mce.getScope().isEmpty() || isNullSafe(mce.getScope().get());
+            case ThisExpr te -> true;
+            case SuperExpr se -> true;
+            case LiteralExpr le -> true;
+            default -> false;
+        };
     }
 
-    private boolean isStaticMethodCall(MethodCallExpr mce) {
-        try {
-            return mce.resolve().isStatic();
-        } catch (Exception e) {
-            return false;
+    private static void addNullGuardFor(Expression scope, NodeList<Statement> implicitExceptionChecks) {
+        if (isNullSafe(scope)) {
+            return;
         }
-    }
 
-    private boolean isStaticFieldOrTypeRef(FieldAccessExpr fae) {
-        try {
-            //return fae.resolve().isStatic();
-            return true;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private void emitNullGuard(Expression scope, List<Statement> prefix) {
-        prefix.add(parseStatement(
-                "if (" + scope + " == null) { " + TracerMethod.IMPLICIT_EXCEPTION.getMethodCallString() + " throw new java.lang.NullPointerException(); } " +
-                        "else { " + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() + " }")
+        implicitExceptionChecks.add(
+                parseStatement(
+                        "if (" + scope + " == null) { " + TracerMethod.IMPLICIT_EXCEPTION.getMethodCallString() + " throw new java.lang.NullPointerException(); } " +
+                                "else { " + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() + " }")
         );
     }
 
-    private void emitArrayGuard(Expression arr, Expression idx, List<Statement> prefix) {
-        prefix.addAll(List.of(
+    private static void addArrayGuardFor(Expression arr, Expression idx, NodeList<Statement> implicitExceptionChecks) {
+        implicitExceptionChecks.add(
                 parseStatement(
                         "if (" + arr + " == null) { " + TracerMethod.IMPLICIT_EXCEPTION.getMethodCallString() + " throw new java.lang.NullPointerException(); } " +
-                                "else { " + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() + " } "),
+                                "else { " + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() + " } ")
+        );
+        implicitExceptionChecks.add(
                 parseStatement(
                         "if (" + idx + " < 0 || " + idx + " >= " + arr + ".length) { " + TracerMethod.IMPLICIT_EXCEPTION.getMethodCallString() + " throw new java.lang.ArrayIndexOutOfBoundsException(); } " +
-                                "else { " + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() + " }"))
+                                "else { " + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() + " }")
         );
     }
 
-    private void emitDivGuard(Expression divisor, List<Statement> prefix) {
-        prefix.add(parseStatement(
-                "if (" + divisor + " == 0) { " + TracerMethod.IMPLICIT_EXCEPTION.getMethodCallString() + " throw new java.lang.ArithmeticException(); } " +
-                        "else { " + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() + " }"));
+    private static void addDivGuardFor(Expression divisor, NodeList<Statement> implicitExceptionChecks) {
+        implicitExceptionChecks.add(
+                parseStatement(
+                        "if (" + divisor + " == 0) { " + TracerMethod.IMPLICIT_EXCEPTION.getMethodCallString() + " throw new java.lang.ArithmeticException(); } " +
+                                "else { " + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() + " }")
+        );
     }
 
-    private void emitNegArraySizeGuard(Expression size, List<Statement> prefix) {
-        prefix.add(parseStatement(
-                "if (" + size + " < 0) { " + TracerMethod.IMPLICIT_EXCEPTION.getMethodCallString() + " throw new java.lang.NegativeArraySizeException(); } " +
-                        "else { " + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() + " }"));
+    private static void addNegArraySizeGuardFor(Expression size, NodeList<Statement> implicitExceptionChecks) {
+        implicitExceptionChecks.add(
+                parseStatement(
+                        "if (" + size + " < 0) { " + TracerMethod.IMPLICIT_EXCEPTION.getMethodCallString() + " throw new java.lang.NegativeArraySizeException(); } " +
+                                "else { " + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() + " }")
+        );
     }
 
-    private static void emitCastGuard(Expression inner, String targetType, List<Statement> prefix) {
-        prefix.add(parseStatement(
-                "if (" + inner + " != null && !(" + inner + " instanceof " + targetType + ")) { " + TracerMethod.IMPLICIT_EXCEPTION.getMethodCallString() + " throw new java.lang.ClassCastException(); } " +
-                        "else { " + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() + " }"));
+    private static void addCastGuardFor(Expression inner, String targetType, NodeList<Statement> implicitExceptionChecks) {
+        implicitExceptionChecks.add(
+                parseStatement(
+                        "if (" + inner + " != null && !(" + inner + " instanceof " + targetType + ")) { " + TracerMethod.IMPLICIT_EXCEPTION.getMethodCallString() + " throw new java.lang.ClassCastException(); } " +
+                                "else { " + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() + " }")
+        );
     }
 }
