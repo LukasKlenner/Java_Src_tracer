@@ -137,6 +137,10 @@ public final class ImplicitExceptionAnalyzer {
 
         Expression value = extractToValue(expression.getValue(), plan, EvaluationContext.ASSIGNMENT_VALUE);
         rewritten.setValue(value);
+        if (expression.getTarget() instanceof ArrayAccessExpr arrayAccessExpr &&
+                arrayAccessExpr.getName().calculateResolvedType().asArrayType().getComponentType().isReferenceType()) {
+            plan.addStep(new CheckStep(new ArrayStoreCheck(arrayAccessExpr.getName().clone(), value.clone())));
+        }
 
         plan.setResult(rewritten);
         return plan;
@@ -167,6 +171,12 @@ public final class ImplicitExceptionAnalyzer {
             }
         }
 
+        if (expression.getInitializer().isPresent()) {
+            EvaluationPlan initPlan = analyzeArrayInitializer(expression.getInitializer().get(), EvaluationContext.NORMAL);
+            plan.addAll(initPlan);
+            rewritten.setInitializer((ArrayInitializerExpr) initPlan.getResult());
+        }
+
         plan.setResult(rewritten);
         return plan;
     }
@@ -180,7 +190,7 @@ public final class ImplicitExceptionAnalyzer {
             rewritten.setArgument(i, argValue);
         }
 
-        plan.addStep(new NoImplicitExceptionStep(2));
+        plan.addStep(new NoImplicitExceptionStep(1));
         plan.setResult(rewritten);
         return plan;
     }
@@ -189,10 +199,18 @@ public final class ImplicitExceptionAnalyzer {
         ArrayInitializerExpr rewritten = expression.clone();
         EvaluationPlan plan = new EvaluationPlan();
 
+        if (!(expression.getParentNode().get() instanceof ArrayCreationExpr ace)) {
+            throw new IllegalStateException("ArrayInitializerExpr must be a child of ArrayCreationExpr");
+        }
+
+        // no array store check for primitive types
+        int implicitChecksPerElement = ace.getElementType().isPrimitiveType() ? 2 : 3;
+
         for (int i = 0; i < rewritten.getValues().size(); i++) {
             Expression value = extractToValue(expression.getValues().get(i), plan, EvaluationContext.ASSIGNMENT_VALUE);
             rewritten.getValues().set(i, value);
-            plan.addStep(new NoImplicitExceptionStep(1));
+
+            plan.addStep(new NoImplicitExceptionStep(implicitChecksPerElement));
         }
 
         plan.setResult(rewritten);

@@ -120,6 +120,16 @@ public final class EvaluationPlanRewriter {
                                 + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() + " }"
                 );
             }
+            case ArrayStoreCheck arrayStoreCheck -> {
+                Expression array = substituteSlots(arrayStoreCheck.array(), context);
+                Expression value = substituteSlots(arrayStoreCheck.value(), context);
+                yield parseStatement(
+                        "if (!" + array + ".getClass().getComponentType().isInstance(" + value + ")) { "
+                                + TracerMethod.IMPLICIT_EXCEPTION.getMethodCallString()
+                                + " throw new java.lang.ArrayStoreException(); } else { "
+                                + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() + " }"
+                );
+            }
             case DivisionByZeroCheck divisionByZeroCheck -> parseStatement(
                     "if (" + substituteSlots(divisionByZeroCheck.divisor(), context) + " == 0) { "
                             + TracerMethod.IMPLICIT_EXCEPTION.getMethodCallString()

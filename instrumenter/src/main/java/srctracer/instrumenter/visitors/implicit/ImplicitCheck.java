@@ -3,13 +3,16 @@ package srctracer.instrumenter.visitors.implicit;
 import com.github.javaparser.ast.expr.Expression;
 
 public sealed interface ImplicitCheck
-        permits NullCheck, ArrayBoundsCheck, DivisionByZeroCheck, NegativeArraySizeCheck, CastCheck {
+        permits NullCheck, ArrayBoundsCheck, ArrayStoreCheck, DivisionByZeroCheck, NegativeArraySizeCheck, CastCheck {
 }
 
 record NullCheck(Expression value) implements ImplicitCheck {
 }
 
 record ArrayBoundsCheck(Expression array, Expression index) implements ImplicitCheck {
+}
+
+record ArrayStoreCheck(Expression array, Expression value) implements ImplicitCheck {
 }
 
 record DivisionByZeroCheck(Expression divisor) implements ImplicitCheck {
