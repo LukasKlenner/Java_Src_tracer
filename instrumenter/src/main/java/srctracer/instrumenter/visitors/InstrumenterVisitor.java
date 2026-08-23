@@ -2,7 +2,6 @@ package srctracer.instrumenter.visitors;
 
 import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.NodeList;
-import com.github.javaparser.ast.body.ConstructorDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.body.TypeDeclaration;
 import com.github.javaparser.ast.expr.Expression;
@@ -10,7 +9,6 @@ import com.github.javaparser.ast.stmt.BlockStmt;
 import com.github.javaparser.ast.stmt.BreakStmt;
 import com.github.javaparser.ast.stmt.CatchClause;
 import com.github.javaparser.ast.stmt.DoStmt;
-import com.github.javaparser.ast.stmt.ExplicitConstructorInvocationStmt;
 import com.github.javaparser.ast.stmt.ForEachStmt;
 import com.github.javaparser.ast.stmt.ForStmt;
 import com.github.javaparser.ast.stmt.IfStmt;
@@ -22,7 +20,6 @@ import com.github.javaparser.ast.stmt.ThrowStmt;
 import com.github.javaparser.ast.stmt.TryStmt;
 import com.github.javaparser.ast.stmt.WhileStmt;
 import com.github.javaparser.ast.type.Type;
-import com.github.javaparser.ast.type.VoidType;
 import com.github.javaparser.ast.visitor.ModifierVisitor;
 import com.github.javaparser.ast.visitor.Visitable;
 import srctracer.database.FunctionDatabaseWriter;
@@ -63,20 +60,20 @@ public class InstrumenterVisitor extends ModifierVisitor<Void> {
         // TODO Methoden mit leerer Implementation machen es kaputt?
         if (md.getBody().isEmpty()) return md;
 
-        // TODO keine private, static, etc Methoden tracen
+        if (!md.isPrivate() && !md.isStatic()) {
+            FunctionSignature signature = new FunctionSignature(
+                    (TypeDeclaration<?>) md.getParentNode().get(),
+                    md.getNameAsString(),
+                    md.getParameters(),
+                    md.getType()
+            );
 
-        FunctionSignature signature = new FunctionSignature(
-                (TypeDeclaration<?>) md.getParentNode().get(),
-                md.getNameAsString(),
-                md.getParameters(),
-                md.getType()
-        );
-
-        insertFuncCall(
-                md.getBody().get(),
-                signature,
-                0
-        );
+            insertFuncCall(
+                    md.getBody().get(),
+                    signature,
+                    0
+            );
+        }
 
         if (isMainMethod(md)) {
             wrapMainWithLifecycle(md);
@@ -124,29 +121,29 @@ public class InstrumenterVisitor extends ModifierVisitor<Void> {
         return "instrumented";
     }
 
-    @Override
-    public Visitable visit(ConstructorDeclaration cd, Void a) {
-        super.visit(cd, a);
-
-        // TODO eigentlich nicht tracen, oder?
-        BlockStmt body = cd.getBody();
-        FunctionSignature signature = new FunctionSignature(
-                (TypeDeclaration<?>) cd.getParentNode().get(),
-                cd.getNameAsString(),
-                cd.getParameters(),
-                new VoidType()
-        );
-        int idx = !body.getStatements().isEmpty()
-                && body.getStatement(0) instanceof ExplicitConstructorInvocationStmt
-                ? 1 : 0;
-
-        insertFuncCall(
-                body,
-                signature,
-                idx
-        );
-        return cd;
-    }
+//    @Override
+//    public Visitable visit(ConstructorDeclaration cd, Void a) {
+//        super.visit(cd, a);
+//
+//        // TODO eigentlich nicht tracen, oder?
+//        BlockStmt body = cd.getBody();
+//        FunctionSignature signature = new FunctionSignature(
+//                (TypeDeclaration<?>) cd.getParentNode().get(),
+//                cd.getNameAsString(),
+//                cd.getParameters(),
+//                new VoidType()
+//        );
+//        int idx = !body.getStatements().isEmpty()
+//                && body.getStatement(0) instanceof ExplicitConstructorInvocationStmt
+//                ? 1 : 0;
+//
+//        insertFuncCall(
+//                body,
+//                signature,
+//                idx
+//        );
+//        return cd;
+//    }
 
     // ---- Initializer blocks ----
 
