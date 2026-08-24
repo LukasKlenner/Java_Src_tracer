@@ -1,1 +1,2 @@
-OOE
+OOOE
+TODO verify actually correct; propably one per dimension (currently always one per array)
