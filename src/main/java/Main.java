@@ -11,6 +11,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.OutputStream;
 import java.io.StringWriter;
 import java.io.Writer;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.URI;
 import java.net.URL;
@@ -166,7 +167,9 @@ public class Main {
             Class<?> userClass = cl.loadClass(className);
             Method userMain = userClass.getMethod("main", String[].class);
             userMain.setAccessible(true);
-            userMain.invoke(null, (Object) parsed.programArgs);
+            try {
+                userMain.invoke(null, (Object) parsed.programArgs);
+            } catch (InvocationTargetException ignored) {}
 
             traceClass.getMethod("trace_end").invoke(null);
 

@@ -1,4 +1,7 @@
 class Base {
+
+    int value = 42;
+
     int compute() {
         return 42;
     }
@@ -6,7 +9,8 @@ class Base {
 
 class Input extends Base {
     int compute() {
-        return super.compute() + 1;
+        int a = super.compute() + 1;
+        return super.value;
     }
 
     public static void main(String[] args) {

@@ -7,6 +7,7 @@ import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.expr.VariableDeclarationExpr;
 import com.github.javaparser.ast.stmt.BlockStmt;
 import com.github.javaparser.ast.stmt.DoStmt;
+import com.github.javaparser.ast.stmt.ExplicitConstructorInvocationStmt;
 import com.github.javaparser.ast.stmt.ExpressionStmt;
 import com.github.javaparser.ast.stmt.ForEachStmt;
 import com.github.javaparser.ast.stmt.ForStmt;
@@ -102,6 +103,13 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
         return n;
     }
 
+    @Override
+    public Visitable visit(ExplicitConstructorInvocationStmt n, Void a) {
+        super.visit(n, a);
+        addImplicitExceptionChecks(n);
+        return n;
+    }
+
     private void addImplicitExceptionChecks(Statement stmt) {
         NodeList<Statement> checks = switch (stmt) {
             case ExpressionStmt es -> rewriteExpression(es.getExpression(), EvaluationContext.NORMAL, es::setExpression);
@@ -118,6 +126,15 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
             case WhileStmt ws -> rewriteExpression(ws.getCondition(), EvaluationContext.LOOP_CONDITION, ws::setCondition);
             case ForStmt fs -> rewriteForStatement(fs);
             case DoStmt ds -> rewriteExpression(ds.getCondition(), EvaluationContext.LOOP_CONDITION, ds::setCondition);
+            case ExplicitConstructorInvocationStmt ecis -> {
+                NodeList<Statement> checksForArgs = new NodeList<>();
+                for (int i = 0; i < ecis.getArguments().size(); i++) {
+                    Expression arg = ecis.getArguments().get(i);
+                    int finalI = i;
+                    checksForArgs.addAll(rewriteExpression(arg, EvaluationContext.NORMAL, expr -> ecis.setArgument(finalI, expr)));
+                }
+                yield checksForArgs;
+            }
             default -> throw new IllegalArgumentException("Unsupported statement type: " + stmt);
         };
 

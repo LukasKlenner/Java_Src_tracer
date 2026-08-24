@@ -18,6 +18,7 @@ import com.github.javaparser.ast.expr.SuperExpr;
 import com.github.javaparser.ast.expr.ThisExpr;
 import com.github.javaparser.ast.expr.UnaryExpr;
 import com.github.javaparser.ast.expr.VariableDeclarationExpr;
+import com.github.javaparser.ast.stmt.ExplicitConstructorInvocationStmt;
 
 public final class ImplicitExceptionAnalyzer {
     private static final String SLOT_PREFIX = "__srctracer_evalslot$";
@@ -28,7 +29,8 @@ public final class ImplicitExceptionAnalyzer {
             case MethodCallExpr methodCallExpr -> analyzeMethodCall(methodCallExpr, context);
             case FieldAccessExpr fieldAccessExpr -> analyzeFieldAccess(fieldAccessExpr, context);
             case ArrayAccessExpr arrayAccessExpr -> analyzeArrayAccess(arrayAccessExpr, context);
-            case VariableDeclarationExpr variableDeclarationExpr -> analyzeVariableDeclaration(variableDeclarationExpr, context);
+            case VariableDeclarationExpr variableDeclarationExpr ->
+                    analyzeVariableDeclaration(variableDeclarationExpr, context);
             case AssignExpr assignExpr -> analyzeAssign(assignExpr, context);
             case CastExpr castExpr -> analyzeCast(castExpr, context);
             case ArrayCreationExpr arrayCreationExpr -> analyzeArrayCreation(arrayCreationExpr, context);
@@ -170,6 +172,9 @@ public final class ImplicitExceptionAnalyzer {
                 level.setDimension(dimValue);
             }
         }
+
+        // TODO wie viele bei mehreren Dimensionen? 1 pro Dimension?
+        plan.addStep(new NoImplicitExceptionStep(1));
 
         if (expression.getInitializer().isPresent()) {
             EvaluationPlan initPlan = analyzeArrayInitializer(expression.getInitializer().get(), EvaluationContext.NORMAL);
@@ -321,15 +326,26 @@ public final class ImplicitExceptionAnalyzer {
     private static boolean isNullSafe(Expression expression) {
         return switch (expression) {
             case FieldAccessExpr fieldAccessExpr -> {
+
                 if (fieldAccessExpr.resolve().isField()) {
-                    yield fieldAccessExpr.resolve().asField().isStatic();
+                    yield fieldAccessExpr.resolve().asField().isStatic() || isNullSafe(fieldAccessExpr.getScope());
                 }
-                yield !(fieldAccessExpr.getScope() instanceof NameExpr nameExpr) || !nameExpr.resolve().getType().isArray();
+
+                // check for array.length
+                if (fieldAccessExpr.getScope() instanceof NameExpr nameExpr && nameExpr.resolve().getType().isArray()) {
+                    if (fieldAccessExpr.getNameAsString().equals("length")) {
+                        yield false;
+                    }
+                    throw new IllegalStateException("Field access on array type that is not 'length': " + fieldAccessExpr);
+                }
+
+                throw new IllegalStateException("Field access expression does not resolve to a field or array length access: " + fieldAccessExpr);
+
             }
             case MethodCallExpr methodCallExpr ->
                     (methodCallExpr.getScope().isPresent() && methodCallExpr.getScope().get().toString().equals("srctracer.Trace"))
                             ||
-                    methodCallExpr.resolve().isStatic()
+                            methodCallExpr.resolve().isStatic()
                             || methodCallExpr.getScope().isEmpty()
                             || isNullSafe(methodCallExpr.getScope().get());
             case ThisExpr ignored -> true;

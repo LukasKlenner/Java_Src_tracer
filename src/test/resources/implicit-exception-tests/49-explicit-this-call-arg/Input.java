@@ -1,12 +1,12 @@
 class Input {
     int value;
 
-    Input(int v) {
+    Input(int v, int w, int x) {
         this.value = v;
     }
 
     Input(int[] arr) {
-        this(arr[0]);
+        this(arr[0], arr[1], 1);
     }
 
     public static void main(String[] args) {

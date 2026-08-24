@@ -4,6 +4,8 @@ class Input {
     }
 
     void process(int x) {
+        int a = 5;
+        return;
     }
 
     public static void main(String[] args) {

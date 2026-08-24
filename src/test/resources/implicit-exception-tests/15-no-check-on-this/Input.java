@@ -2,6 +2,11 @@ class Input {
     int value = 42;
 
     int getValue() {
+        return this.getValue2();
+    }
+
+    int getValue2() {
+        int value = this.value;
         return this.value;
     }
 
