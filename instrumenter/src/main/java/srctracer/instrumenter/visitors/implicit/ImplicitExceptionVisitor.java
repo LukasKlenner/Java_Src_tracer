@@ -3,7 +3,16 @@ package srctracer.instrumenter.visitors.implicit;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.NodeList;
+import com.github.javaparser.ast.body.VariableDeclarator;
+import com.github.javaparser.ast.expr.ArrayAccessExpr;
+import com.github.javaparser.ast.expr.BinaryExpr;
+import com.github.javaparser.ast.expr.BooleanLiteralExpr;
 import com.github.javaparser.ast.expr.Expression;
+import com.github.javaparser.ast.expr.FieldAccessExpr;
+import com.github.javaparser.ast.expr.IntegerLiteralExpr;
+import com.github.javaparser.ast.expr.MethodCallExpr;
+import com.github.javaparser.ast.expr.NameExpr;
+import com.github.javaparser.ast.expr.UnaryExpr;
 import com.github.javaparser.ast.expr.VariableDeclarationExpr;
 import com.github.javaparser.ast.stmt.BlockStmt;
 import com.github.javaparser.ast.stmt.DoStmt;
@@ -17,6 +26,7 @@ import com.github.javaparser.ast.stmt.Statement;
 import com.github.javaparser.ast.stmt.ThrowStmt;
 import com.github.javaparser.ast.stmt.WhileStmt;
 import com.github.javaparser.ast.stmt.YieldStmt;
+import com.github.javaparser.ast.type.ClassOrInterfaceType;
 import com.github.javaparser.ast.visitor.ModifierVisitor;
 import com.github.javaparser.ast.visitor.Visitable;
 import srctracer.instrumenter.visitors.InstrumenterVisitor;
@@ -74,14 +84,6 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
         addImplicitExceptionChecks(n);
         return n;
     }
-
-    @Override
-    public Visitable visit(ForEachStmt n, Void a) {
-        super.visit(n, a);
-        addImplicitExceptionChecks(n);
-        return n;
-    }
-
     @Override
     public Visitable visit(WhileStmt n, Void a) {
         super.visit(n, a);
@@ -91,17 +93,28 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
 
     @Override
     public Visitable visit(ForStmt n, Void a) {
-        super.visit(n, a);
-        addImplicitExceptionChecks(n);
-        return n;
+        WhileStmt whileStmt = rewriteForToWhile(n);
+        replaceStatement(n, whileStmt);
+        whileStmt.accept(this, a);
+        return whileStmt;
     }
 
     @Override
     public Visitable visit(DoStmt n, Void a) {
-        super.visit(n, a);
-        addImplicitExceptionChecks(n);
-        return n;
+        BlockStmt whileStmt = rewriteDoWhileToWhile(n);
+        replaceStatement(n, whileStmt);
+        whileStmt.accept(this, a);
+        return whileStmt;
     }
+
+    @Override
+    public Visitable visit(ForEachStmt n, Void a) {
+        BlockStmt whileStmt = rewriteForEachToWhile(n);
+        replaceStatement(n, whileStmt);
+        whileStmt.accept(this, a);
+        return whileStmt;
+    }
+
 
     @Override
     public Visitable visit(ExplicitConstructorInvocationStmt n, Void a) {
@@ -112,20 +125,20 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
 
     private void addImplicitExceptionChecks(Statement stmt) {
         NodeList<Statement> checks = switch (stmt) {
-            case ExpressionStmt es -> rewriteExpression(es.getExpression(), EvaluationContext.NORMAL, es::setExpression);
+            case ExpressionStmt es ->
+                    rewriteExpression(es.getExpression(), EvaluationContext.NORMAL, es::setExpression);
             case ReturnStmt rs -> {
                 if (rs.getExpression().isPresent()) {
                     yield rewriteExpression(rs.getExpression().get(), EvaluationContext.RETURN_VALUE, rs::setExpression);
                 }
                 yield new NodeList<>();
             }
-            case YieldStmt ys -> rewriteExpression(ys.getExpression(), EvaluationContext.RETURN_VALUE, ys::setExpression);
+            case YieldStmt ys ->
+                    rewriteExpression(ys.getExpression(), EvaluationContext.RETURN_VALUE, ys::setExpression);
             case IfStmt is -> rewriteExpression(is.getCondition(), EvaluationContext.CONDITION, is::setCondition);
             case ThrowStmt ts -> rewriteExpression(ts.getExpression(), EvaluationContext.NORMAL, ts::setExpression);
-            case ForEachStmt fes -> rewriteExpression(fes.getIterable(), EvaluationContext.NORMAL, fes::setIterable);
-            case WhileStmt ws -> rewriteExpression(ws.getCondition(), EvaluationContext.LOOP_CONDITION, ws::setCondition);
-            case ForStmt fs -> rewriteForStatement(fs);
-            case DoStmt ds -> rewriteExpression(ds.getCondition(), EvaluationContext.LOOP_CONDITION, ds::setCondition);
+            case WhileStmt ws ->
+                    rewriteExpression(ws.getCondition(), EvaluationContext.LOOP_CONDITION, ws::setCondition);
             case ExplicitConstructorInvocationStmt ecis -> {
                 NodeList<Statement> checksForArgs = new NodeList<>();
                 for (int i = 0; i < ecis.getArguments().size(); i++) {
@@ -142,41 +155,139 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
             return;
         }
 
-        Node parent = stmt.getParentNode().orElse(null);
-        if (parent instanceof BlockStmt block) {
-            int index = block.getStatements().indexOf(stmt);
-            block.getStatements().addAll(index, checks);
-            return;
+        addBeforeStatement(stmt, checks);
+
+        if (stmt instanceof WhileStmt whileStmt) {
+            whileStmt.getBody().asBlockStmt().getStatements().addAll(toLoopRefreshChecks(checks));
         }
-        throw new IllegalStateException("Statement is not inside a block: " + stmt);
     }
 
-    private NodeList<Statement> rewriteForStatement(ForStmt forStmt) {
-        NodeList<Statement> checks = new NodeList<>();
+    private WhileStmt rewriteForToWhile(ForStmt forStmt) {
+        addBeforeStatement(forStmt, new NodeList<>(forStmt.getInitialization().stream().map(ExpressionStmt::new).toList()));
 
-        for (int i = 0; i < forStmt.getInitialization().size(); i++) {
-            final int idx = i;
-            Expression init = forStmt.getInitialization().get(i);
-            checks.addAll(rewriteExpression(init, EvaluationContext.NORMAL, expr -> forStmt.getInitialization().set(idx, expr)));
+        WhileStmt whileStmt = new WhileStmt();
+        whileStmt.setCondition(forStmt.getCompare().orElse(new BooleanLiteralExpr(true)).clone());
+        BlockStmt body = new BlockStmt();
+        body.getStatements().add(forStmt.getBody().clone());
+        body.getStatements().addAll(forStmt.getUpdate().stream().map(ExpressionStmt::new).map(Statement::clone).toList());
+        whileStmt.setBody(body);
+        return whileStmt;
+    }
+
+    private BlockStmt rewriteDoWhileToWhile(DoStmt doStmt) {
+        WhileStmt whileStmt = new WhileStmt();
+        whileStmt.setCondition(doStmt.getCondition().clone());
+        whileStmt.setBody(doStmt.getBody().clone());
+
+        BlockStmt outer = new BlockStmt();
+        outer.getStatements().add(doStmt.getBody().clone());
+        outer.getStatements().add(whileStmt);
+
+        return outer;
+    }
+
+    private BlockStmt rewriteForEachToWhile(ForEachStmt forEachStmt) {
+        if (forEachStmt.getIterable().calculateResolvedType().isArray()) {
+            return rewriteForEachArrayToWhile(forEachStmt);
+        } else {
+            return rewriteForEachIterableToWhile(forEachStmt);
         }
+    }
 
-        if (forStmt.getCompare().isPresent()) {
-            NodeList<Statement> compareChecks = rewriteExpression(
-                    forStmt.getCompare().get(),
-                    EvaluationContext.LOOP_CONDITION,
-                    forStmt::setCompare
-            );
-            checks.addAll(compareChecks);
-            forStmt.getBody().asBlockStmt().getStatements().addAll(toLoopRefreshChecks(compareChecks));
-        }
+    private BlockStmt rewriteForEachArrayToWhile(ForEachStmt forEachStmt) {
+        VariableDeclarator variable = forEachStmt.getVariable().getVariable(0);
 
-        for (int i = 0; i < forStmt.getUpdate().size(); i++) {
-            final int idx = i;
-            Expression update = forStmt.getUpdate().get(i);
-            checks.addAll(rewriteExpression(update, EvaluationContext.NORMAL, expr -> forStmt.getUpdate().set(idx, expr)));
-        }
+        // int __srctracer_tmp$index = 0;
+        VariableDeclarator index = new VariableDeclarator(
+                new ClassOrInterfaceType(null, "int"),
+                "__srctracer_tmp$" + nextTmpId++,
+                new IntegerLiteralExpr("0")
+        );
 
-        return checks;
+        // while (index < array.length) { ... }
+        WhileStmt whileStmt = new WhileStmt();
+        whileStmt.setCondition(
+                new BinaryExpr(
+                        new NameExpr(index.getNameAsString()),
+                        new FieldAccessExpr(forEachStmt.getIterable().clone(), "length"),
+                        BinaryExpr.Operator.LESS
+                )
+        );
+
+        BlockStmt body = new BlockStmt();
+
+        body.addStatement(forEachStmt.getBody().clone());
+
+        // Type variable = array[index];
+        VariableDeclarator element = new VariableDeclarator(
+                variable.getType().clone(),
+                variable.getNameAsString(),
+                new ArrayAccessExpr(forEachStmt.getIterable().clone(), new NameExpr(index.getNameAsString()))
+        );
+
+        // add after loop enter recording
+        body.getStatement(0).asBlockStmt().addStatement(1, new ExpressionStmt(
+                new VariableDeclarationExpr(element)
+        ));
+
+        // index++;
+        body.addStatement(new ExpressionStmt(
+                new UnaryExpr(new NameExpr(index.getNameAsString()), UnaryExpr.Operator.POSTFIX_INCREMENT)
+        ));
+
+        whileStmt.setBody(body);
+
+        BlockStmt outer = new BlockStmt();
+        outer.addStatement(new ExpressionStmt(new VariableDeclarationExpr(index)));
+        outer.addStatement(whileStmt);
+
+        return outer;
+    }
+
+    private BlockStmt rewriteForEachIterableToWhile(ForEachStmt forEachStmt) {
+        VariableDeclarator variable = forEachStmt.getVariable().getVariable(0);
+
+        // Iterator<Type> iterator = iterable.iterator();
+        VariableDeclarator iterator = new VariableDeclarator(
+                new ClassOrInterfaceType(null, "Iterator")
+                        .setTypeArguments(variable.getType().clone()),
+                "__srctracer_tmp$" + nextTmpId++,
+                new MethodCallExpr(
+                        forEachStmt.getIterable().clone(),
+                        "iterator"
+                )
+        );
+
+        // while (iterator.hasNext()) { ... }
+        WhileStmt whileStmt = new WhileStmt();
+        whileStmt.setCondition(
+                new MethodCallExpr(new NameExpr("iterator"), "hasNext")
+        );
+
+        BlockStmt body = new BlockStmt();
+
+
+        body.addStatement(forEachStmt.getBody().clone());
+
+        // Type variable = iterator.next();
+        VariableDeclarator element = new VariableDeclarator(
+                variable.getType().clone(),
+                variable.getNameAsString(),
+                new MethodCallExpr(new NameExpr("iterator"), "next")
+        );
+
+        // add after loop enter recording
+        body.getStatement(0).asBlockStmt().addStatement(1, new ExpressionStmt(
+                new VariableDeclarationExpr(element)
+        ));
+
+        whileStmt.setBody(body);
+
+        BlockStmt outer = new BlockStmt();
+        outer.addStatement(new ExpressionStmt(new VariableDeclarationExpr(iterator)));
+        outer.addStatement(whileStmt);
+
+        return outer;
     }
 
     private NodeList<Statement> rewriteExpression(
@@ -209,5 +320,26 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
             refreshChecks.add(cloned);
         }
         return refreshChecks;
+    }
+
+
+    private static void addBeforeStatement(Statement stmt, NodeList<? extends Statement> statements) {
+        Node parent = stmt.getParentNode().orElse(null);
+        if (parent instanceof BlockStmt block) {
+            int index = block.getStatements().indexOf(stmt);
+            block.getStatements().addAll(index, statements);
+        } else {
+            throw new IllegalStateException("statement is not inside a block: " + stmt);
+        }
+    }
+
+    private static void replaceStatement(Statement toReplace, Statement replacement) {
+        Node parent = toReplace.getParentNode().orElse(null);
+        if (parent instanceof BlockStmt block) {
+            int index = block.getStatements().indexOf(toReplace);
+            block.getStatements().set(index, replacement);
+        } else {
+            throw new IllegalStateException("statement is not inside a block: " + toReplace);
+        }
     }
 }
