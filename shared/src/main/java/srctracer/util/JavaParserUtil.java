@@ -5,6 +5,7 @@ import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.body.ConstructorDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.body.TypeDeclaration;
+import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.expr.LambdaExpr;
 import com.github.javaparser.ast.stmt.BlockStmt;
 import com.github.javaparser.ast.stmt.BreakStmt;
@@ -17,6 +18,8 @@ import com.github.javaparser.ast.stmt.SwitchStmt;
 import com.github.javaparser.ast.stmt.WhileStmt;
 import com.github.javaparser.ast.type.ArrayType;
 import com.github.javaparser.ast.type.Type;
+import com.github.javaparser.resolution.types.ResolvedPrimitiveType;
+import com.github.javaparser.resolution.types.ResolvedType;
 import srctracer.trace.TracerMethod;
 
 import java.util.Optional;
@@ -141,5 +144,28 @@ public class JavaParserUtil {
             cur = cur.getParentNode().orElse(null);
         }
         return Optional.empty();
+    }
+
+    public static Optional<Statement> getLastReturnStatement(MethodDeclaration method) {
+        if (method.getBody().isEmpty()) {
+            throw new IllegalArgumentException("Method has no body, cannot get last non-block statement.");
+        }
+        return getLastReturnStatement(method.getBody().get());
+    }
+
+    private static Optional<Statement> getLastReturnStatement(Statement stmt) {
+        if (stmt instanceof BlockStmt block) {
+            if (block.getStatements().isEmpty()) {
+                throw new IllegalArgumentException("Block statement is empty, cannot get last non-block statement.");
+            }
+            return getLastReturnStatement(block.getStatements().getLast().get());
+        }
+
+        return Optional.of(stmt);
+    }
+
+    public static boolean isLongOrInt(Expression expr) {
+        ResolvedType type = expr.calculateResolvedType();
+        return type.equals(ResolvedPrimitiveType.INT) || type.equals(ResolvedPrimitiveType.LONG);
     }
 }

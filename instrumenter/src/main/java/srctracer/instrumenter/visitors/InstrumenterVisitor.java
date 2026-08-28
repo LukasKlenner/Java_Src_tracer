@@ -29,6 +29,7 @@ import srctracer.util.FunctionSignature;
 import java.util.Optional;
 
 import static srctracer.util.JavaParserUtil.findEnclosingReturnType;
+import static srctracer.util.JavaParserUtil.getLastReturnStatement;
 import static srctracer.util.JavaParserUtil.insertAfter;
 import static srctracer.util.JavaParserUtil.insertBefore;
 import static srctracer.util.JavaParserUtil.isBreakForSwitch;
@@ -57,7 +58,6 @@ public class InstrumenterVisitor extends ModifierVisitor<Void> {
     public Visitable visit(MethodDeclaration md, Void a) {
         super.visit(md, a);
 
-        // TODO Methoden mit leerer Implementation machen es kaputt?
         if (md.getBody().isEmpty()) return md;
 
         if (!md.isPrivate() && !md.isStatic()) {
@@ -75,9 +75,13 @@ public class InstrumenterVisitor extends ModifierVisitor<Void> {
             );
         }
 
+        Optional<Statement> last = getLastReturnStatement(md);
+
         if (isMainMethod(md)) {
             wrapMainWithLifecycle(md);
             stats.incrementMainCount();
+        } else if (last.isPresent() && !(last.get() instanceof ReturnStmt || last.get() instanceof ThrowStmt)) {
+            md.getBody().get().addStatement(parseTracerCall(TracerMethod.RETURN));
         }
 
         return md;

@@ -1,4 +1,5 @@
-import srctracer.KeyAnnotater;
+package srctracer;
+
 import srctracer.database.CsvFunctionDatabaseWriter;
 import srctracer.database.FunctionDatabaseWriter;
 import srctracer.instrumenter.Instrumenter;

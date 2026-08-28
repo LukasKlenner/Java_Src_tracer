@@ -1,5 +1,5 @@
 class Input {
-    static String getMessage() {
+    private static String getMessage() {
         return "error";
     }
 

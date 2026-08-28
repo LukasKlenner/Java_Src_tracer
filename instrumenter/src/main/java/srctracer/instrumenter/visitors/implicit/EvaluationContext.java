@@ -6,5 +6,6 @@ public enum EvaluationContext {
     LOOP_CONDITION,
     RETURN_VALUE,
     ASSIGNMENT_VALUE,
-    ARRAY_INDEX
+    ARRAY_INDEX,
+    THROW_EXPRESSION,
 }

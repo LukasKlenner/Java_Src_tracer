@@ -18,13 +18,27 @@ import com.github.javaparser.ast.expr.SuperExpr;
 import com.github.javaparser.ast.expr.ThisExpr;
 import com.github.javaparser.ast.expr.UnaryExpr;
 import com.github.javaparser.ast.expr.VariableDeclarationExpr;
-import com.github.javaparser.ast.stmt.ExplicitConstructorInvocationStmt;
+import com.github.javaparser.ast.stmt.ThrowStmt;
+import com.github.javaparser.resolution.types.ResolvedPrimitiveType;
+
+import static srctracer.util.JavaParserUtil.isLongOrInt;
 
 public final class ImplicitExceptionAnalyzer {
     private static final String SLOT_PREFIX = "__srctracer_evalslot$";
     private int nextSlotId = 0;
 
     public EvaluationPlan analyzeExpression(Expression expression, EvaluationContext context) {
+
+        if (context == EvaluationContext.THROW_EXPRESSION) {
+            EvaluationPlan plan = new EvaluationPlan();
+            Expression value = extractToValue(expression, plan, EvaluationContext.NORMAL);
+            String slot = newSlot();
+            plan.addStep(new EvaluateStep(slot, value.clone()));
+            plan.addStep(new CheckStep(new NullCheck(new NameExpr(slot))));
+            plan.setResult(new NameExpr(slot));
+            return plan;
+        }
+
         return switch (expression) {
             case MethodCallExpr methodCallExpr -> analyzeMethodCall(methodCallExpr, context);
             case FieldAccessExpr fieldAccessExpr -> analyzeFieldAccess(fieldAccessExpr, context);
@@ -40,9 +54,9 @@ public final class ImplicitExceptionAnalyzer {
             case UnaryExpr unaryExpr -> analyzeUnary(unaryExpr, context);
             case EnclosedExpr enclosedExpr -> analyzeEnclosed(enclosedExpr, context);
             default -> {
-                EvaluationPlan plan = new EvaluationPlan();
-                plan.setResult(expression.clone());
-                yield plan;
+                EvaluationPlan emptyPlan = new EvaluationPlan();
+                emptyPlan.setResult(expression.clone());
+                yield emptyPlan;
             }
         };
     }
@@ -260,7 +274,10 @@ public final class ImplicitExceptionAnalyzer {
 
         Expression leftValue = extractToValue(expression.getLeft(), plan, context);
         Expression rightValue = extractToValue(expression.getRight(), plan, context);
-        plan.addStep(new CheckStep(new DivisionByZeroCheck(rightValue.clone())));
+
+        if (isLongOrInt(expression.getLeft()) || isLongOrInt(expression.getRight())) {
+            plan.addStep(new CheckStep(new DivisionByZeroCheck(rightValue.clone())));
+        }
 
         rewritten.setLeft(leftValue);
         rewritten.setRight(rightValue);

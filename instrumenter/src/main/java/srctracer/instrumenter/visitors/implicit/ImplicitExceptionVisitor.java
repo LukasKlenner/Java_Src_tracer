@@ -136,7 +136,7 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
             case YieldStmt ys ->
                     rewriteExpression(ys.getExpression(), EvaluationContext.RETURN_VALUE, ys::setExpression);
             case IfStmt is -> rewriteExpression(is.getCondition(), EvaluationContext.CONDITION, is::setCondition);
-            case ThrowStmt ts -> rewriteExpression(ts.getExpression(), EvaluationContext.NORMAL, ts::setExpression);
+            case ThrowStmt ts -> rewriteExpression(ts.getExpression(), EvaluationContext.THROW_EXPRESSION, ts::setExpression);
             case WhileStmt ws ->
                     rewriteExpression(ws.getCondition(), EvaluationContext.LOOP_CONDITION, ws::setCondition);
             case ExplicitConstructorInvocationStmt ecis -> {
