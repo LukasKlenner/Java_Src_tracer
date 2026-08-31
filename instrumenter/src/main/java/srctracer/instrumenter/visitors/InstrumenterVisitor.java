@@ -29,7 +29,6 @@ import srctracer.util.FunctionSignature;
 import java.util.Optional;
 
 import static srctracer.util.JavaParserUtil.findEnclosingReturnType;
-import static srctracer.util.JavaParserUtil.getLastReturnStatement;
 import static srctracer.util.JavaParserUtil.insertAfter;
 import static srctracer.util.JavaParserUtil.insertBefore;
 import static srctracer.util.JavaParserUtil.isBreakForSwitch;
@@ -59,6 +58,7 @@ public class InstrumenterVisitor extends ModifierVisitor<Void> {
         super.visit(md, a);
 
         if (md.getBody().isEmpty()) return md;
+        BlockStmt body = md.getBody().get();
 
         if (!md.isPrivate() && !md.isStatic()) {
             FunctionSignature signature = new FunctionSignature(
@@ -69,19 +69,20 @@ public class InstrumenterVisitor extends ModifierVisitor<Void> {
             );
 
             insertFuncCall(
-                    md.getBody().get(),
+                    body,
                     signature,
                     0
             );
         }
 
-        Optional<Statement> last = getLastReturnStatement(md);
+        // record implicit return in void methods
+        if (!alwaysExits(body)) {
+            body.addStatement(parseTracerCall(TracerMethod.RETURN));
+        }
 
         if (isMainMethod(md)) {
             wrapMainWithLifecycle(md);
             stats.incrementMainCount();
-        } else if (last.isPresent() && !(last.get() instanceof ReturnStmt || last.get() instanceof ThrowStmt)) {
-            md.getBody().get().addStatement(parseTracerCall(TracerMethod.RETURN));
         }
 
         return md;
@@ -302,7 +303,7 @@ public class InstrumenterVisitor extends ModifierVisitor<Void> {
         NodeList<CatchClause> catches = n.getCatchClauses();
         for (int i = 0; i < catches.size(); i++) {
             BlockStmt catchBody = catches.get(i).getBody();
-            catchBody.addStatement(0, parseTracerCall(TracerMethod.CATCH, i));
+            catchBody.addStatement(0, parseTracerCall(TracerMethod.CATCH, i + 1));
         }
 
         stats.incrementTryCount();

@@ -146,13 +146,6 @@ public class JavaParserUtil {
         return Optional.empty();
     }
 
-    public static Optional<Statement> getLastReturnStatement(MethodDeclaration method) {
-        if (method.getBody().isEmpty()) {
-            throw new IllegalArgumentException("Method has no body, cannot get last non-block statement.");
-        }
-        return getLastReturnStatement(method.getBody().get());
-    }
-
     private static Optional<Statement> getLastReturnStatement(Statement stmt) {
         if (stmt instanceof BlockStmt block) {
             if (block.getStatements().isEmpty()) {
