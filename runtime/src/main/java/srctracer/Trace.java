@@ -13,6 +13,8 @@ public final class Trace {
     private static Writer out;
     private static boolean breakBefore = false;
 
+    public static long totalCatchCount = 0;
+
     private static final String OUT_DIR = "trace-out/";
 
     private static void write(String s) {
@@ -44,9 +46,18 @@ public final class Trace {
     public static void _IMPLICIT_EXCEPTION()    { write("I"); }
     public static void _NO_IMPLICIT_EXCEPTION() { write("O"); }
 
-    public static void _TRY()             { write("T"); }
-    public static void _TRY_END()         { write("U"); }
-    public static void _CATCH(int idx)    { write("J" + Integer.toHexString(idx)); }
+    public static void _TRY(int catchCount) {
+        write("T");
+        totalCatchCount += catchCount;
+    }
+
+    public static void _TRY_END() {
+        write("U");
+    }
+
+    public static void _CATCH(long catchIndex) {
+        write("J" + Long.toHexString(catchIndex));
+    }
 
     public static void trace_start(Writer writer) {
         out = writer;

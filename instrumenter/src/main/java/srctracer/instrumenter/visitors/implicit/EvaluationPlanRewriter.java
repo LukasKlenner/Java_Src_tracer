@@ -106,7 +106,9 @@ public final class EvaluationPlanRewriter {
         return switch (check) {
             case NullCheck nullCheck -> parseStatement(
                     "if (" + substituteSlots(nullCheck.value(), context) + " == null) { "
-                            + TracerMethod.IMPLICIT_EXCEPTION.getMethodCallString()
+                            + TracerMethod.IMPLICIT_EXCEPTION.getMethodCallString()    // null check true
+                            + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() // object creation no exception
+                            + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() // throw not null
                             + " throw new java.lang.NullPointerException(); } else { "
                             + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() + " }"
             );
@@ -115,7 +117,9 @@ public final class EvaluationPlanRewriter {
                 Expression index = substituteSlots(arrayBoundsCheck.index(), context);
                 yield parseStatement(
                         "if (" + index + " < 0 || " + index + " >= " + array + ".length) { "
-                                + TracerMethod.IMPLICIT_EXCEPTION.getMethodCallString()
+                                + TracerMethod.IMPLICIT_EXCEPTION.getMethodCallString()    // bounds check true
+                                + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() // object creation no exception
+                                + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() // throw not null
                                 + " throw new java.lang.ArrayIndexOutOfBoundsException(); } else { "
                                 + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() + " }"
                 );
@@ -125,20 +129,26 @@ public final class EvaluationPlanRewriter {
                 Expression value = substituteSlots(arrayStoreCheck.value(), context);
                 yield parseStatement(
                         "if (!" + array + ".getClass().getComponentType().isInstance(" + value + ")) { "
-                                + TracerMethod.IMPLICIT_EXCEPTION.getMethodCallString()
+                                + TracerMethod.IMPLICIT_EXCEPTION.getMethodCallString()    // array store check true
+                                + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() // object creation no exception
+                                + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() // throw not null
                                 + " throw new java.lang.ArrayStoreException(); } else { "
                                 + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() + " }"
                 );
             }
             case DivisionByZeroCheck divisionByZeroCheck -> parseStatement(
                     "if (" + substituteSlots(divisionByZeroCheck.divisor(), context) + " == 0) { "
-                            + TracerMethod.IMPLICIT_EXCEPTION.getMethodCallString()
+                            + TracerMethod.IMPLICIT_EXCEPTION.getMethodCallString()    // zero check true
+                            + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() // object creation no exception
+                            + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() // throw not null
                             + " throw new java.lang.ArithmeticException(); } else { "
                             + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() + " }"
             );
             case NegativeArraySizeCheck negativeArraySizeCheck -> parseStatement(
                     "if (" + substituteSlots(negativeArraySizeCheck.size(), context) + " < 0) { "
-                            + TracerMethod.IMPLICIT_EXCEPTION.getMethodCallString()
+                            + TracerMethod.IMPLICIT_EXCEPTION.getMethodCallString()    // negative check true
+                            + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() // object creation no exception
+                            + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() // throw not null
                             + " throw new java.lang.NegativeArraySizeException(); } else { "
                             + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() + " }"
             );
@@ -146,7 +156,9 @@ public final class EvaluationPlanRewriter {
                 Expression value = substituteSlots(castCheck.value(), context);
                 yield parseStatement(
                         "if (" + value + " != null && !(" + value + " instanceof " + castCheck.targetType() + ")) { "
-                                + TracerMethod.IMPLICIT_EXCEPTION.getMethodCallString()
+                                + TracerMethod.IMPLICIT_EXCEPTION.getMethodCallString()    // cast check true
+                                + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() // object creation no exception
+                                + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() // throw not null
                                 + " throw new java.lang.ClassCastException(); } else { "
                                 + TracerMethod.NO_IMPLICIT_EXCEPTION.getMethodCallString() + " }"
                 );

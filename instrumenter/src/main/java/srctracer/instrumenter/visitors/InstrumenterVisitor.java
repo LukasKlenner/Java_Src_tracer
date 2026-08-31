@@ -3,6 +3,7 @@ package srctracer.instrumenter.visitors;
 import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.NodeList;
 import com.github.javaparser.ast.body.MethodDeclaration;
+import com.github.javaparser.ast.body.Parameter;
 import com.github.javaparser.ast.body.TypeDeclaration;
 import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.stmt.BlockStmt;
@@ -23,11 +24,15 @@ import com.github.javaparser.ast.type.Type;
 import com.github.javaparser.ast.visitor.ModifierVisitor;
 import com.github.javaparser.ast.visitor.Visitable;
 import srctracer.database.FunctionDatabaseWriter;
+import srctracer.instrumenter.Instrumenter;
+import srctracer.trace.TracerField;
 import srctracer.trace.TracerMethod;
 import srctracer.util.FunctionSignature;
 
 import java.util.Optional;
 
+import static com.github.javaparser.StaticJavaParser.parseType;
+import static srctracer.instrumenter.Instrumenter.MAIN_LIFECYCLE_CATCH_PARAM;
 import static srctracer.util.JavaParserUtil.findEnclosingReturnType;
 import static srctracer.util.JavaParserUtil.insertAfter;
 import static srctracer.util.JavaParserUtil.insertBefore;
@@ -36,6 +41,7 @@ import static srctracer.util.JavaParserUtil.isInsideLambda;
 import static srctracer.util.JavaParserUtil.isMainMethod;
 import static srctracer.util.JavaParserUtil.parseStatement;
 import static srctracer.util.JavaParserUtil.parseTracerCall;
+import static srctracer.util.JavaParserUtil.parseTracerFieldLoad;
 
 public class InstrumenterVisitor extends ModifierVisitor<Void> {
 
@@ -99,6 +105,8 @@ public class InstrumenterVisitor extends ModifierVisitor<Void> {
         String name = enclosingTypeName(md);
 
         BlockStmt tryBlock = new BlockStmt();
+        // TODO this (and the catch) is only needed for key retracing and do not atually exists in the original method
+        tryBlock.addStatement(parseTracerCall(TracerMethod.TRY, 1));
         for (Statement s : original.getStatements()) {
             tryBlock.addStatement(s.clone());
         }
@@ -109,6 +117,14 @@ public class InstrumenterVisitor extends ModifierVisitor<Void> {
         TryStmt tryStmt = new TryStmt();
         tryStmt.setTryBlock(tryBlock);
         tryStmt.setFinallyBlock(finallyBlock);
+
+        CatchClause catchClause = new CatchClause();
+        catchClause.setParameter(new Parameter(parseType("java.lang.Throwable"), MAIN_LIFECYCLE_CATCH_PARAM));
+        BlockStmt catchBody = new BlockStmt();
+        catchBody.addStatement(parseTracerCall(TracerMethod.CATCH, "0"));
+        catchBody.addStatement(parseStatement("throw " + MAIN_LIFECYCLE_CATCH_PARAM + ";"));
+        catchClause.setBody(catchBody);
+        tryStmt.setCatchClauses(new NodeList<>(catchClause));
 
         BlockStmt newBody = new BlockStmt();
         newBody.addStatement(parseTracerCall(TracerMethod.TRACE_START, '"' + name + '"'));
@@ -292,7 +308,11 @@ public class InstrumenterVisitor extends ModifierVisitor<Void> {
         super.visit(n, a);
 
         BlockStmt tryBlock = n.getTryBlock();
-        tryBlock.addStatement(0, parseTracerCall(TracerMethod.TRY));
+        NodeList<CatchClause> catches = n.getCatchClauses();
+
+        String currentCatchCountVar = "__srctracer_current_catch_count_$" + nextTmpId++;
+        insertBefore(n, parseTracerFieldLoad(currentCatchCountVar, TracerField.TOTAL_CATCH_COUNT));
+        tryBlock.addStatement(0, parseTracerCall(TracerMethod.TRY, catches.size()));
 
         // Append _TRY_END only if the body can fall through; otherwise Java
         // would reject the trailing call as unreachable code.
@@ -300,10 +320,9 @@ public class InstrumenterVisitor extends ModifierVisitor<Void> {
             tryBlock.addStatement(parseTracerCall(TracerMethod.TRY_END));
         }
 
-        NodeList<CatchClause> catches = n.getCatchClauses();
         for (int i = 0; i < catches.size(); i++) {
             BlockStmt catchBody = catches.get(i).getBody();
-            catchBody.addStatement(0, parseTracerCall(TracerMethod.CATCH, i + 1));
+            catchBody.addStatement(0, parseTracerCall(TracerMethod.CATCH, currentCatchCountVar + " + " + i));
         }
 
         stats.incrementTryCount();

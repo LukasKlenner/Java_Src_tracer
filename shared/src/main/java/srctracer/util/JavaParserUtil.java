@@ -20,6 +20,7 @@ import com.github.javaparser.ast.type.ArrayType;
 import com.github.javaparser.ast.type.Type;
 import com.github.javaparser.resolution.types.ResolvedPrimitiveType;
 import com.github.javaparser.resolution.types.ResolvedType;
+import srctracer.trace.TracerField;
 import srctracer.trace.TracerMethod;
 
 import java.util.Optional;
@@ -83,6 +84,14 @@ public class JavaParserUtil {
 
     public static Statement parseTracerCall(TracerMethod method, Object... args) {
         return parseStatement(method.getMethodCallString(args));
+    }
+
+    public static Statement parseTracerFieldLoad(String varName, TracerField field) {
+        return parseStatement(field.getFieldTypeString() + " " + varName + " = " + field.getFieldAccessString() + ";");
+    }
+
+    public static Statement parseTracerFieldStore(TracerField field, String expr) {
+        return parseStatement(field.getFieldAccessString() + " = " + expr + ";");
     }
 
     public static Statement parseStatement(String code) {

@@ -34,6 +34,7 @@ import srctracer.instrumenter.visitors.InstrumenterVisitor;
 import java.util.function.Consumer;
 
 import static com.github.javaparser.StaticJavaParser.parseStatement;
+import static srctracer.instrumenter.Instrumenter.MAIN_LIFECYCLE_CATCH_PARAM;
 
 /**
  * Further instruments the given {@link CompilationUnit} to trace implicit exceptions, such as those thrown by arithmetic operations or null dereferences.
@@ -136,7 +137,13 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
             case YieldStmt ys ->
                     rewriteExpression(ys.getExpression(), EvaluationContext.RETURN_VALUE, ys::setExpression);
             case IfStmt is -> rewriteExpression(is.getCondition(), EvaluationContext.CONDITION, is::setCondition);
-            case ThrowStmt ts -> rewriteExpression(ts.getExpression(), EvaluationContext.THROW_EXPRESSION, ts::setExpression);
+            case ThrowStmt ts -> {
+                if (ts.getExpression().toString().equals(MAIN_LIFECYCLE_CATCH_PARAM)) {
+                    // Don't instrument the main lifecycle catch parameter.
+                    yield new NodeList<>();
+                }
+                yield rewriteExpression(ts.getExpression(), EvaluationContext.THROW_EXPRESSION, ts::setExpression);
+            }
             case WhileStmt ws ->
                     rewriteExpression(ws.getCondition(), EvaluationContext.LOOP_CONDITION, ws::setCondition);
             case ExplicitConstructorInvocationStmt ecis -> {

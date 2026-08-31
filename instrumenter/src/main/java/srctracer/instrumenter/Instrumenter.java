@@ -32,6 +32,8 @@ import java.util.List;
 
 public class Instrumenter extends SourceTransformer {
 
+    public static final String MAIN_LIFECYCLE_CATCH_PARAM = "__srctracer_main_lifecycle_catch_param";
+
     private final FunctionDatabaseWriter functionDatabaseWriter;
 
     public Instrumenter(FunctionDatabaseWriter functionDatabaseWriter, List<Path> sourceRoots, List<Path> jars) throws IOException {
