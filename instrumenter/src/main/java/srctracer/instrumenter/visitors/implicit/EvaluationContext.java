@@ -8,4 +8,5 @@ public enum EvaluationContext {
     ASSIGNMENT_VALUE,
     ARRAY_INDEX,
     THROW_EXPRESSION,
+    SWITCH_SELECTOR,
 }

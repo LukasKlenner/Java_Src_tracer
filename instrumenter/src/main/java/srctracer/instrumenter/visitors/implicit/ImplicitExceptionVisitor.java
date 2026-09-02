@@ -12,6 +12,7 @@ import com.github.javaparser.ast.expr.FieldAccessExpr;
 import com.github.javaparser.ast.expr.IntegerLiteralExpr;
 import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.expr.NameExpr;
+import com.github.javaparser.ast.expr.SwitchExpr;
 import com.github.javaparser.ast.expr.UnaryExpr;
 import com.github.javaparser.ast.expr.VariableDeclarationExpr;
 import com.github.javaparser.ast.stmt.BlockStmt;
@@ -23,6 +24,7 @@ import com.github.javaparser.ast.stmt.ForStmt;
 import com.github.javaparser.ast.stmt.IfStmt;
 import com.github.javaparser.ast.stmt.ReturnStmt;
 import com.github.javaparser.ast.stmt.Statement;
+import com.github.javaparser.ast.stmt.SwitchStmt;
 import com.github.javaparser.ast.stmt.ThrowStmt;
 import com.github.javaparser.ast.stmt.WhileStmt;
 import com.github.javaparser.ast.stmt.YieldStmt;
@@ -74,6 +76,13 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
 
     @Override
     public Visitable visit(IfStmt n, Void a) {
+        super.visit(n, a);
+        addImplicitExceptionChecks(n);
+        return n;
+    }
+
+    @Override
+    public Visitable visit(SwitchStmt n, Void a) {
         super.visit(n, a);
         addImplicitExceptionChecks(n);
         return n;
@@ -155,6 +164,9 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
                 }
                 yield checksForArgs;
             }
+            case SwitchStmt ss ->
+                rewriteExpression(ss.getSelector(), EvaluationContext.SWITCH_SELECTOR, ss::setSelector);
+
             default -> throw new IllegalArgumentException("Unsupported statement type: " + stmt);
         };
 

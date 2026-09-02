@@ -24,7 +24,6 @@ import com.github.javaparser.ast.type.Type;
 import com.github.javaparser.ast.visitor.ModifierVisitor;
 import com.github.javaparser.ast.visitor.Visitable;
 import srctracer.database.FunctionDatabaseWriter;
-import srctracer.instrumenter.Instrumenter;
 import srctracer.trace.TracerField;
 import srctracer.trace.TracerMethod;
 import srctracer.util.FunctionSignature;

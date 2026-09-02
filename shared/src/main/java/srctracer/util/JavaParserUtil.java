@@ -28,6 +28,24 @@ import java.util.stream.Collectors;
 
 public class JavaParserUtil {
 
+    public static boolean switchNeedsNullCheck(SwitchStmt switchStmt) {
+        Expression selector = switchStmt.getSelector();
+        ResolvedType resolvedType = selector.calculateResolvedType();
+        if (resolvedType.isPrimitive()) {
+            return false; // Primitive types cannot be null
+        }
+        // For reference types, we need to check if any case is a null literal
+        boolean hasNullCase = switchStmt.getEntries().stream()
+                .flatMap(entry -> entry.getLabels().stream())
+                .anyMatch(Expression::isNullLiteralExpr);
+
+        if (hasNullCase) {
+            throw new IllegalArgumentException("Switch statement with a null case label is not supported.");
+        }
+
+        return true; // Reference type without null case needs a null check
+    }
+
     public static boolean isMainMethod(MethodDeclaration md) {
         if (!md.getNameAsString().equals("main")) return false;
         if (!md.isStatic()) return false;

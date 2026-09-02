@@ -18,10 +18,12 @@ import com.github.javaparser.ast.expr.SuperExpr;
 import com.github.javaparser.ast.expr.ThisExpr;
 import com.github.javaparser.ast.expr.UnaryExpr;
 import com.github.javaparser.ast.expr.VariableDeclarationExpr;
-import com.github.javaparser.ast.stmt.ThrowStmt;
-import com.github.javaparser.resolution.types.ResolvedPrimitiveType;
+import com.github.javaparser.ast.stmt.SwitchStmt;
+import com.github.javaparser.resolution.declarations.ResolvedEnumConstantDeclaration;
+import com.github.javaparser.resolution.declarations.ResolvedFieldDeclaration;
 
 import static srctracer.util.JavaParserUtil.isLongOrInt;
+import static srctracer.util.JavaParserUtil.switchNeedsNullCheck;
 
 public final class ImplicitExceptionAnalyzer {
     private static final String SLOT_PREFIX = "__srctracer_evalslot$";
@@ -35,6 +37,20 @@ public final class ImplicitExceptionAnalyzer {
             String slot = newSlot();
             plan.addStep(new EvaluateStep(slot, value.clone()));
             plan.addStep(new CheckStep(new NullCheck(new NameExpr(slot))));
+            plan.setResult(new NameExpr(slot));
+            return plan;
+        } else if (context == EvaluationContext.SWITCH_SELECTOR) {
+            EvaluationPlan plan = new EvaluationPlan();
+            Expression value = extractToValue(expression, plan, EvaluationContext.NORMAL);
+            String slot = newSlot();
+            plan.addStep(new EvaluateStep(slot, value.clone()));
+
+            SwitchStmt switchStmt = expression.findAncestor(SwitchStmt.class)
+                    .orElseThrow(() -> new IllegalStateException("Switch selector must be inside a switch statement"));
+
+            if (switchNeedsNullCheck(switchStmt)) {
+                plan.addStep(new CheckStep(new NullCheck(new NameExpr(slot))));
+            }
             plan.setResult(new NameExpr(slot));
             return plan;
         }
@@ -344,20 +360,26 @@ public final class ImplicitExceptionAnalyzer {
         return switch (expression) {
             case FieldAccessExpr fieldAccessExpr -> {
 
-                if (fieldAccessExpr.resolve().isField()) {
-                    yield fieldAccessExpr.resolve().asField().isStatic() || isNullSafe(fieldAccessExpr.getScope());
+                var resolved = fieldAccessExpr.resolve();
+
+                if (resolved instanceof ResolvedFieldDeclaration field) {
+                    yield field.isStatic() || isNullSafe(fieldAccessExpr.getScope());
                 }
 
-                // check for array.length
-                if (fieldAccessExpr.getScope() instanceof NameExpr nameExpr && nameExpr.resolve().getType().isArray()) {
-                    if (fieldAccessExpr.getNameAsString().equals("length")) {
-                        yield false;
-                    }
-                    throw new IllegalStateException("Field access on array type that is not 'length': " + fieldAccessExpr);
+                if (resolved instanceof ResolvedEnumConstantDeclaration) {
+                    yield true;
                 }
 
-                throw new IllegalStateException("Field access expression does not resolve to a field or array length access: " + fieldAccessExpr);
+                // array.length
+                if (fieldAccessExpr.getNameAsString().equals("length")
+                        && fieldAccessExpr.getScope().calculateResolvedType().isArray()) {
+                    yield false;
+                }
 
+                throw new IllegalStateException(
+                        "Unexpected field access: " + fieldAccessExpr
+                                + " resolves to " + resolved.getClass()
+                );
             }
             case MethodCallExpr methodCallExpr ->
                     (methodCallExpr.getScope().isPresent() && methodCallExpr.getScope().get().toString().equals("srctracer.Trace"))
