@@ -19,6 +19,8 @@ import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.Arrays;
 import java.util.List;
 
@@ -31,16 +33,34 @@ public class Main {
               instrument  Produce instrumented Java source
               trace       Instrument, compile, run, and produce a trace file
               annotate    Produce trace and pass to key-annotater for .key file
+              fuzz        Fuzz, trace interesting inputs, and produce .key files
             
             Options:
-              -o <file>   Output file (instrument only; default: <name>.instrumented.java)
-              --binary    Use binary trace format (trace/annotate; default: text)
-              --          Separator for program arguments (trace/annotate)
+              -o <file>      Output file (instrument only; default: <name>.instrumented.java)
+              --binary       Use binary trace format (trace/annotate/fuzz; default: text)
+              --duration <s> Fuzzing duration in seconds (fuzz only; default: 15)
+              --batch-size <n> Number of proofs per KeY invocation (fuzz only; default: 0 = all)
+              --start-method <name>  Start tracing from this method (default: main). Main method is not traced if this is not the default value.
+              --             Separator for program arguments (trace/annotate)
             """;
 
+    public static final String INSTRUMENT = "instrument";
+    public static final String TRACE = "trace";
+    public static final String ANNOTATE = "annotate";
+    public static final String FUZZ = "fuzz";
+
     public static final String DEFAULT_FUNCTION_DB_NAME = "functions.csv";
+
     public static final String DEFAULT_TRACE_OUTPUT_DIR = "trace-out";
     public static final String DEFAULT_KEY_OUTPUT_DIR = "key-out";
+    public static final String DEFAULT_FUZZ_OUTPUT_DIR = "fuzz-out";
+
+    public static final String DEFAULT_START_METHOD_NAME = "main";
+    public static final boolean DEFAULT_BINARY_TRACE = false;
+
+    public static final int DEFAULT_FUZZ_DURATION = 15;
+    public static final int DEFAULT_FUZZ_BATCH_SIZE = 1;
+    public static final String DEFAULT_FUZZ_START_METHOD = "fuzzerTestOneInput";
 
     public static void main(String[] args) throws Exception {
         if (args.length == 0) {
@@ -51,10 +71,13 @@ public class Main {
         String command = args[0];
         String[] rest = Arrays.copyOfRange(args, 1, args.length);
 
+        TraceArgs parsedArgs = parseTraceArgs(rest, command);
+
         switch (command) {
-            case "instrument" -> instrument(rest);
-            case "trace" -> trace(rest);
-            case "annotate" -> annotate(rest);
+            case INSTRUMENT -> instrument(parsedArgs);
+            case TRACE -> trace(parsedArgs);
+            case ANNOTATE -> annotate(parsedArgs);
+            case FUZZ -> fuzz(parsedArgs);
             default -> {
                 System.err.print(USAGE);
                 throw new IllegalArgumentException("Unknown command: " + command);
@@ -64,57 +87,32 @@ public class Main {
 
     // ---- instrument: produce instrumented source ----
 
-    private static void instrument(String[] args) throws Exception {
-        Path input = null;
-        Path output = null;
-
-        for (int i = 0; i < args.length; i++) {
-            if ("-o".equals(args[i]) && i + 1 < args.length) {
-                output = Path.of(args[++i]);
-            } else if (input == null) {
-                input = Path.of(args[i]);
-            } else {
-                System.err.print(USAGE);
-                throw new IllegalArgumentException("Unexpected argument: " + args[i]);
-            }
-        }
-
-        if (input == null) {
-            System.err.print(USAGE);
-            throw new IllegalArgumentException("No input file specified");
-        }
-
-        if (output == null) {
-            String name = input.getFileName().toString().replace(".java", "");
-            output = input.resolveSibling(name + ".instrumented.java");
-        }
-
+    private static void instrument(TraceArgs args) throws Exception {
         Path runtimeJar = resolveRuntimeJar(false);
 
-        try (FunctionDatabaseWriter dbWriter = new CsvFunctionDatabaseWriter(output.resolveSibling(DEFAULT_FUNCTION_DB_NAME))) {
-            Instrumenter instrumenter = new Instrumenter(dbWriter, List.of(input.getParent()), List.of(runtimeJar));
+        try (FunctionDatabaseWriter dbWriter = new CsvFunctionDatabaseWriter(args.output.resolveSibling(DEFAULT_FUNCTION_DB_NAME))) {
+            Instrumenter instrumenter = new Instrumenter(dbWriter, List.of(args.input.getParent()), List.of(runtimeJar), args.startMethodName);
 
-            instrumenter.transform(input, output);
+            instrumenter.transform(args.input, args.output);
         }
 
-        System.out.println("Wrote instrumented source: " + output);
+        System.out.println("Wrote instrumented source: " + args.output);
     }
 
     // ---- trace: instrument + compile + run → trace file ----
 
-    private static void trace(String[] args) throws Exception {
-        TraceArgs parsed = parseTraceArgs(args, "trace");
+    private static void trace(TraceArgs args) throws Exception {
 
-        Path runtimeJar = resolveRuntimeJar(parsed.binary);
+        Path runtimeJar = resolveRuntimeJar(args.binary);
 
         String instrumentedSource;
-        try (FunctionDatabaseWriter dbWriter = new CsvFunctionDatabaseWriter(Path.of(DEFAULT_TRACE_OUTPUT_DIR, DEFAULT_FUNCTION_DB_NAME))) {
-            Instrumenter instrumenter = new Instrumenter(dbWriter, List.of(parsed.input.getParent()), List.of(runtimeJar));
+        try (FunctionDatabaseWriter dbWriter = new CsvFunctionDatabaseWriter(args.output().resolve(DEFAULT_FUNCTION_DB_NAME))) {
+            Instrumenter instrumenter = new Instrumenter(dbWriter, List.of(args.input.getParent()), List.of(runtimeJar), args.startMethodName);
 
-            instrumentedSource = instrumenter.transformToString(parsed.input);
+            instrumentedSource = instrumenter.transformToString(args.input);
         }
 
-        String className = classNameFrom(parsed.input);
+        String className = classNameFrom(args.input);
         Path tempDir = Files.createTempDirectory("srctracer-");
 
         compile(instrumentedSource, className, tempDir, runtimeJar);
@@ -124,7 +122,7 @@ public class Main {
             Class<?> userClass = cl.loadClass(className);
             Method userMain = userClass.getMethod("main", String[].class);
             userMain.setAccessible(true);
-            userMain.invoke(null, (Object) parsed.programArgs);
+            userMain.invoke(null, (Object) args.programArgs);
         } finally {
             deleteRecursive(tempDir);
         }
@@ -132,21 +130,19 @@ public class Main {
 
 // ---- annotate: instrument + compile + run (in-memory trace) → key-annotater ----
 
-    private static void annotate(String[] args) throws Exception {
-        TraceArgs parsed = parseTraceArgs(args, "annotate");
+    private static void annotate(TraceArgs args) throws Exception {
 
-        Path runtimeJar = resolveRuntimeJar(parsed.binary);
+        Path runtimeJar = resolveRuntimeJar(args.binary);
 
         String instrumentedSource;
-        Path functionDatabaseFile = Path.of(DEFAULT_KEY_OUTPUT_DIR, DEFAULT_FUNCTION_DB_NAME);
+        Path functionDatabaseFile = args.output.resolve(DEFAULT_FUNCTION_DB_NAME);
         try (FunctionDatabaseWriter dbWriter = new CsvFunctionDatabaseWriter(functionDatabaseFile)) {
-            Instrumenter instrumenter = new Instrumenter(dbWriter, List.of(parsed.input.getParent()), List.of(runtimeJar));
+            Instrumenter instrumenter = new Instrumenter(dbWriter, List.of(args.input.getParent()), List.of(runtimeJar), args.startMethodName);
 
-            instrumentedSource = instrumenter.transformToString(parsed.input);
+            instrumentedSource = instrumenter.transformToString(args.input);
         }
 
-
-        String className = classNameFrom(parsed.input);
+        String className = classNameFrom(args.input);
         Path tempDir = Files.createTempDirectory("srctracer-");
 
         compile(instrumentedSource, className, tempDir, runtimeJar);
@@ -155,7 +151,7 @@ public class Main {
             Class<?> traceClass = cl.loadClass("srctracer.Trace");
 
             Object memoryTarget;
-            if (parsed.binary) {
+            if (args.binary) {
                 ByteArrayOutputStream baos = new ByteArrayOutputStream();
                 traceClass.getMethod("trace_start", OutputStream.class).invoke(null, baos);
                 memoryTarget = baos;
@@ -169,12 +165,13 @@ public class Main {
             Method userMain = userClass.getMethod("main", String[].class);
             userMain.setAccessible(true);
             try {
-                userMain.invoke(null, (Object) parsed.programArgs);
-            } catch (InvocationTargetException ignored) {}
+                userMain.invoke(null, (Object) args.programArgs);
+            } catch (InvocationTargetException ignored) {
+            }
 
             traceClass.getMethod("trace_end").invoke(null);
 
-            Path traceFile = Path.of(DEFAULT_KEY_OUTPUT_DIR, className + ".trace" + (parsed.binary ? "" : ".txt"));
+            Path traceFile = args.output.resolve(className + ".trace" + (args.binary ? "" : ".txt"));
             if (memoryTarget instanceof StringWriter sw) {
                 Files.createDirectories(traceFile.getParent());
                 Files.writeString(traceFile, sw.toString());
@@ -184,26 +181,72 @@ public class Main {
                 Files.write(traceFile, baos.toByteArray());
             }
 
-            KeyAnnotater.annotate(parsed.input, Path.of(DEFAULT_KEY_OUTPUT_DIR), traceFile, functionDatabaseFile);
+            KeyAnnotater.annotate(args.input, args.output, traceFile, functionDatabaseFile, args.startMethodName);
             System.out.println("Annotation complete.");
         } finally {
             deleteRecursive(tempDir);
         }
     }
 
+    // ---- fuzz: fuzz + trace interesting inputs + produce .key files ----
+
+    private static void fuzz(TraceArgs args) throws Exception {
+        FuzzCommand.run(args);
+    }
+
 // ---- shared arg parsing for trace/annotate ----
 
-    private record TraceArgs(Path input, boolean binary, String[] programArgs) {
+    record TraceArgs(
+            Path input,
+            Path output,
+            boolean binary,
+            int fuzzDuration,
+            int batchSize,
+            String startMethodName,
+            String[] programArgs
+    ) {
     }
 
     private static TraceArgs parseTraceArgs(String[] args, String command) {
         Path input = null;
+        Path output = null;
         boolean binary = false;
+        int fuzzDuration = 15;
+        int batchSize = 1;
+        String startMethodName = command.equals(FUZZ) ? DEFAULT_FUZZ_START_METHOD : DEFAULT_START_METHOD_NAME;
         String[] programArgs = new String[0];
 
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
                 case "--binary" -> binary = true;
+                case "--start-method" -> {
+                    if (i + 1 >= args.length) {
+                        System.err.print(USAGE);
+                        throw new IllegalArgumentException("--start-method requires a value");
+                    }
+                    startMethodName = args[++i];
+                }
+                case "--duration" -> {
+                    if (i + 1 >= args.length) {
+                        System.err.print(USAGE);
+                        throw new IllegalArgumentException("--duration requires a value");
+                    }
+                    fuzzDuration = Integer.parseInt(args[++i]);
+                }
+                case "--batch-size" -> {
+                    if (i + 1 >= args.length) {
+                        System.err.print(USAGE);
+                        throw new IllegalArgumentException("--batch-size requires a value");
+                    }
+                    batchSize = Integer.parseInt(args[++i]);
+                }
+                case "-o" -> {
+                    if (i + 1 >= args.length) {
+                        System.err.print(USAGE);
+                        throw new IllegalArgumentException("-o requires a value");
+                    }
+                    output = Path.of(args[++i]);
+                }
                 case "--" -> {
                     programArgs = Arrays.copyOfRange(args, i + 1, args.length);
                     i = args.length;
@@ -224,16 +267,46 @@ public class Main {
             throw new IllegalArgumentException("Missing input file");
         }
 
-        return new TraceArgs(input, binary, programArgs);
+        if (output == null) {
+
+            DateTimeFormatter fmt = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH.mm.ss");
+            String timestamp = fmt.format(LocalDateTime.now());
+
+            String fileName = input.getFileName().toString().replace(".java", "");
+            switch (command) {
+                case INSTRUMENT -> output = input.resolveSibling(fileName + ".instrumented.java");
+                case TRACE -> output = Path.of(DEFAULT_TRACE_OUTPUT_DIR, fileName + "_" + timestamp);
+                case ANNOTATE -> output = Path.of(DEFAULT_KEY_OUTPUT_DIR, fileName + "_" + timestamp);
+                case FUZZ -> output = Path.of(DEFAULT_FUZZ_OUTPUT_DIR, fileName + "_" + timestamp);
+            }
+        }
+
+        return new TraceArgs(input, output, binary, fuzzDuration, batchSize, startMethodName, programArgs);
     }
 
 // ---- shared helpers ----
 
-    private static String classNameFrom(Path input) {
+    static Method getStartMethod(String startMethodName, Class<?> userClass) {
+        List<Method> startMethods = Arrays.stream(userClass.getMethods())
+                .filter(m -> m.getName().equals(startMethodName))
+                .toList();
+
+        if (startMethods.isEmpty()) {
+            throw new IllegalArgumentException("No suitable start method found: " + startMethodName);
+        }
+
+        if (startMethods.size() > 1) {
+            throw new IllegalArgumentException("Multiple methods found with name: " + startMethodName);
+        }
+
+        return startMethods.getFirst();
+    }
+
+    static String classNameFrom(Path input) {
         return input.getFileName().toString().replace(".java", "");
     }
 
-    private static URLClassLoader createClassLoader(Path classDir, Path runtimeJar)
+    static URLClassLoader createClassLoader(Path classDir, Path runtimeJar)
             throws Exception {
         return new URLClassLoader(
                 new URL[]{
@@ -244,7 +317,7 @@ public class Main {
         );
     }
 
-    private static void compile(
+    static void compile(
             String source,
             String className,
             Path outputDir,
@@ -273,7 +346,7 @@ public class Main {
         }
     }
 
-    private static Path resolveRuntimeJar(boolean binary) {
+    static Path resolveRuntimeJar(boolean binary) {
         Path projectRoot = findProjectRoot();
         String module = binary ? "runtime-binary" : "runtime";
         Path jar = projectRoot.resolve(module + "/build/libs/" + module + "-0.1.0-SNAPSHOT.jar");
@@ -293,7 +366,7 @@ public class Main {
         throw new RuntimeException("Cannot find project root (no settings.gradle.kts found)");
     }
 
-    private static void deleteRecursive(Path path) {
+    static void deleteRecursive(Path path) {
         try {
             if (Files.isDirectory(path)) {
                 try (var entries = Files.list(path)) {
@@ -306,7 +379,7 @@ public class Main {
         }
     }
 
-    private static class InMemoryJavaFile extends SimpleJavaFileObject {
+    static class InMemoryJavaFile extends SimpleJavaFileObject {
         private final String code;
 
         InMemoryJavaFile(String className, String code) {

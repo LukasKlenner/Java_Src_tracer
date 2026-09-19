@@ -3,6 +3,7 @@ package srctracer.instrumenter.visitors.implicit;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.NodeList;
+import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.body.VariableDeclarator;
 import com.github.javaparser.ast.expr.ArrayAccessExpr;
 import com.github.javaparser.ast.expr.BinaryExpr;
@@ -37,6 +38,7 @@ import java.util.function.Consumer;
 
 import static com.github.javaparser.StaticJavaParser.parseStatement;
 import static srctracer.instrumenter.Instrumenter.MAIN_LIFECYCLE_CATCH_PARAM;
+import static srctracer.util.JavaParserUtil.isMainMethod;
 
 /**
  * Further instruments the given {@link CompilationUnit} to trace implicit exceptions, such as those thrown by arithmetic operations or null dereferences.
@@ -52,6 +54,24 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
     private int nextTmpId = 0;
     private final ImplicitExceptionAnalyzer analyzer = new ImplicitExceptionAnalyzer();
     private final EvaluationPlanRewriter rewriter = new EvaluationPlanRewriter();
+    private final String lifecycleMethodName;
+
+    public ImplicitExceptionVisitor(String lifecycleMethodName) {
+        this.lifecycleMethodName = lifecycleMethodName;
+    }
+
+    @Override
+    public Visitable visit(MethodDeclaration md, Void a) {
+        boolean isLifecycleMethod = isLifecycleMethod(md);
+        boolean isMainMethod = isMainMethod(md);
+
+        if (isMainMethod && !isLifecycleMethod) {
+            // Do not instrument the main method if it's a lifecycle method
+            return md;
+        }
+
+        return super.visit(md, a);
+    }
 
     @Override
     public Visitable visit(ExpressionStmt n, Void a) {
@@ -360,5 +380,12 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
         } else {
             throw new IllegalStateException("statement is not inside a block: " + toReplace);
         }
+    }
+
+    private boolean isLifecycleMethod(MethodDeclaration md) {
+        if (lifecycleMethodName != null) {
+            return md.getNameAsString().equals(lifecycleMethodName);
+        }
+        return isMainMethod(md);
     }
 }

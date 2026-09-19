@@ -13,9 +13,17 @@ public class KeyAnnotater {
             Path traceFile,
             Path functionDatabaseFile
     ) throws IOException {
+        annotate(inputFile, outputDir, traceFile, functionDatabaseFile, null);
+    }
 
-
-        KeySourceTransformer annotater = new KeySourceTransformer();
+    public static void annotate(
+            Path inputFile,
+            Path outputDir,
+            Path traceFile,
+            Path functionDatabaseFile,
+            String targetMethodName
+    ) throws IOException {
+        KeySourceTransformer annotater = new KeySourceTransformer(targetMethodName);
         annotater.transform(inputFile, outputDir.resolve(Path.of(JAVA_SOURCE_DIR, inputFile.getFileName().toString())));
 
         KeyProofObligationCreator.createProofObligation(outputDir, annotater.getTracedMethod(), traceFile, functionDatabaseFile);

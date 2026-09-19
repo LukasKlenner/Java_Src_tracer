@@ -63,7 +63,7 @@ public class JavaParserUtil {
     public static String getParamDescriptor(MethodDeclaration method) {
         return method.getParameters().stream()
                 .map(param -> typeToDescriptor(param.getType()))
-                .collect(Collectors.joining(";"));
+                .collect(Collectors.joining(","));
     }
 
     public static String typeToDescriptor(Type type) {
@@ -78,16 +78,20 @@ public class JavaParserUtil {
         }
 
         if (type.isPrimitiveType()) {
-            baseType = switch (type.asPrimitiveType().getType()) {
-                case INT -> "I";
-                case BOOLEAN -> "Z";
-                case BYTE -> "B";
-                case CHAR -> "C";
-                case DOUBLE -> "D";
-                case FLOAT -> "F";
-                case LONG -> "J";
-                case SHORT -> "S";
-            };
+            if (arrayDimensions == 0) {
+                baseType = type.toString();
+            } else {
+                baseType = switch (type.asPrimitiveType().getType()) {
+                    case INT -> "I";
+                    case BOOLEAN -> "Z";
+                    case BYTE -> "B";
+                    case CHAR -> "C";
+                    case DOUBLE -> "D";
+                    case FLOAT -> "F";
+                    case LONG -> "J";
+                    case SHORT -> "S";
+                };
+            }
         } else {
             // Reference type — KeY uses dots, not slashes
             String name = type.asString();

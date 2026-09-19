@@ -45,6 +45,7 @@ import static srctracer.util.JavaParserUtil.parseTracerFieldLoad;
 public class InstrumenterVisitor extends ModifierVisitor<Void> {
 
     private final FunctionDatabaseWriter functionDatabaseWriter;
+    private final String lifecycleMethodName;
 
     int nextFuncId = 1;
     int nextSwitchId = 0;
@@ -53,13 +54,25 @@ public class InstrumenterVisitor extends ModifierVisitor<Void> {
     private final InstrumenterStats stats = new InstrumenterStats();
 
     public InstrumenterVisitor(FunctionDatabaseWriter functionDatabaseWriter) {
+        this(functionDatabaseWriter, null);
+    }
+
+    public InstrumenterVisitor(FunctionDatabaseWriter functionDatabaseWriter, String lifecycleMethodName) {
         this.functionDatabaseWriter = functionDatabaseWriter;
+        this.lifecycleMethodName = lifecycleMethodName;
     }
 
     // ---- Method / constructor entry ----
 
     @Override
     public Visitable visit(MethodDeclaration md, Void a) {
+        boolean isLifecycleMethod = isLifecycleMethod(md);
+        boolean isMainMethod = isMainMethod(md);
+
+        if (isMainMethod && !isLifecycleMethod) {
+            // Do not instrument the main method if it's a lifecycle method
+            return md;
+        }
         super.visit(md, a);
 
         if (md.getBody().isEmpty()) return md;
@@ -85,7 +98,7 @@ public class InstrumenterVisitor extends ModifierVisitor<Void> {
             body.addStatement(parseTracerCall(TracerMethod.RETURN));
         }
 
-        if (isMainMethod(md)) {
+        if (isLifecycleMethod) {
             wrapMainWithLifecycle(md);
             stats.incrementMainCount();
         }
@@ -130,6 +143,13 @@ public class InstrumenterVisitor extends ModifierVisitor<Void> {
         newBody.addStatement(tryStmt);
 
         md.setBody(newBody);
+    }
+
+    private boolean isLifecycleMethod(MethodDeclaration md) {
+        if (lifecycleMethodName != null) {
+            return md.getNameAsString().equals(lifecycleMethodName);
+        }
+        return isMainMethod(md);
     }
 
     private static String enclosingTypeName(MethodDeclaration md) {
@@ -346,6 +366,21 @@ public class InstrumenterVisitor extends ModifierVisitor<Void> {
             return i.getElseStmt().isPresent()
                     && alwaysExits(i.getThenStmt())
                     && alwaysExits(i.getElseStmt().get());
+        }
+        if (s instanceof SwitchStmt sw) {
+            NodeList<SwitchEntry> entries = sw.getEntries();
+            boolean hasDefault = entries.stream().anyMatch(e -> e.getLabels().isEmpty());
+            if (!hasDefault) return false;
+
+            boolean currentGroupExits = false;
+            for (int i = entries.size() - 1; i >= 0; i--) {
+                NodeList<Statement> stmts = entries.get(i).getStatements();
+                if (!stmts.isEmpty()) {
+                    currentGroupExits = alwaysExits(stmts.getLast().get());
+                }
+                if (!currentGroupExits) return false;
+            }
+            return true;
         }
         return false;
     }

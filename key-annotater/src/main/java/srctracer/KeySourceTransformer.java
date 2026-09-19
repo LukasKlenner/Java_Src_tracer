@@ -16,7 +16,16 @@ import static srctracer.util.JavaParserUtil.isMainMethod;
 
 public class KeySourceTransformer extends SourceTransformer {
 
+    private final String targetMethodName;
     private MethodDeclaration tracedMethod;
+
+    public KeySourceTransformer() {
+        this(null);
+    }
+
+    public KeySourceTransformer(String targetMethodName) {
+        this.targetMethodName = targetMethodName;
+    }
 
     @Override
     protected void performTransformation(CompilationUnit compilationUnit) {
@@ -33,13 +42,20 @@ public class KeySourceTransformer extends SourceTransformer {
         compilationUnit.printer(new JmlPrinter());
     }
 
+    private boolean isTargetMethod(MethodDeclaration md) {
+        if (targetMethodName != null) {
+            return md.getNameAsString().equals(targetMethodName);
+        }
+        return isMainMethod(md);
+    }
+
     private class KeyAnnotaterVisitor extends VoidVisitorAdapter<Void> {
 
         @Override
         public void visit(MethodDeclaration md, Void arg) {
             super.visit(md, arg);
 
-            if (!isMainMethod(md)) {
+            if (!isTargetMethod(md)) {
                 return;
             }
 
@@ -49,6 +65,13 @@ public class KeySourceTransformer extends SourceTransformer {
             builder.setIsNormalBehaviour(true);
 
             builder.addAssignable("\\everything");
+
+
+//            builder.addEnsures("(\\forall int j; 0<=j && j < array.length;" +
+//                    "             (\\num_of int i; 0<=i && i < array.length; \\old(array[i]) == array[j])" +
+//                    "          == (\\num_of int i; 0<=i && i < array.length;      array[i]  == array[j]))");
+//
+//            builder.addEnsures("(\\forall int i; 0<=i && i<array.length-1; array[i] <= array[i+1])");
 
             md.setJavadocComment(builder.build());
         }

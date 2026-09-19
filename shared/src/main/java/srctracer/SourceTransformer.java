@@ -19,7 +19,6 @@ public abstract class SourceTransformer {
         CompilationUnit cu = StaticJavaParser.parse(input);
 
         performTransformation(cu);
-        System.out.println("Transformed " + input);
         return cu.toString();
     }
 

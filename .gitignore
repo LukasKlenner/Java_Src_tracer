@@ -6,3 +6,6 @@ key-out/
 .idea/
 *.iml
 .vscode/
+fuzz-out/
+tools/jazzer/
+tools/key/

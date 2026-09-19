@@ -1,6 +1,5 @@
 package srctracer.instrumenter;
 
-import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.StaticJavaParser;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.NodeList;
@@ -35,9 +34,15 @@ public class Instrumenter extends SourceTransformer {
     public static final String MAIN_LIFECYCLE_CATCH_PARAM = "__srctracer_main_lifecycle_catch_param";
 
     private final FunctionDatabaseWriter functionDatabaseWriter;
+    private final String lifecycleMethodName;
 
     public Instrumenter(FunctionDatabaseWriter functionDatabaseWriter, List<Path> sourceRoots, List<Path> jars) throws IOException {
+        this(functionDatabaseWriter, sourceRoots, jars, null);
+    }
+
+    public Instrumenter(FunctionDatabaseWriter functionDatabaseWriter, List<Path> sourceRoots, List<Path> jars, String lifecycleMethodName) throws IOException {
         this.functionDatabaseWriter = functionDatabaseWriter;
+        this.lifecycleMethodName = lifecycleMethodName;
         configureSolver(sourceRoots, jars);
     }
 
@@ -61,9 +66,9 @@ public class Instrumenter extends SourceTransformer {
         // TODO clenaup als visitor?
         extractFieldInitializers(cu);
 
-        InstrumenterVisitor v = new InstrumenterVisitor(functionDatabaseWriter);
+        InstrumenterVisitor v = new InstrumenterVisitor(functionDatabaseWriter, lifecycleMethodName);
         cu.accept(v, null);
-        cu.accept(new ImplicitExceptionVisitor(), null);
+        cu.accept(new ImplicitExceptionVisitor(lifecycleMethodName), null);
 
         System.out.println(v.getStats().getStatsSummary());
     }

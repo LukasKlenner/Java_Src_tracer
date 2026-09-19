@@ -179,8 +179,14 @@ public final class ImplicitExceptionAnalyzer {
     }
 
     private EvaluationPlan analyzeCast(CastExpr expression, EvaluationContext context) {
-        CastExpr rewritten = expression.clone();
         EvaluationPlan plan = new EvaluationPlan();
+
+        if (expression.getType().isPrimitiveType()) {
+            plan.setResult(expression);
+            return plan;
+        }
+
+        CastExpr rewritten = expression.clone();
 
         Expression value = extractToValue(expression.getExpression(), plan, EvaluationContext.NORMAL);
         plan.addStep(new CheckStep(new CastCheck(value.clone(), rewritten.getType().asString())));
