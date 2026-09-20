@@ -40,6 +40,8 @@ public class Main {
               --binary       Use binary trace format (trace/annotate/fuzz; default: text)
               --duration <s> Fuzzing duration in seconds (fuzz only; default: 15)
               --batch-size <n> Number of proofs per KeY invocation (fuzz only; default: 0 = all)
+              --input-sizes <file>  Skip Jazzer; read comma-separated sizes from file, generate random byte[] inputs (fuzz only)
+              --key-memory <size>  JVM heap for KeY (fuzz only; default: 8g)
               --start-method <name>  Start tracing from this method (default: main). Main method is not traced if this is not the default value.
               --             Separator for program arguments (trace/annotate)
             """;
@@ -61,6 +63,7 @@ public class Main {
     public static final int DEFAULT_FUZZ_DURATION = 15;
     public static final int DEFAULT_FUZZ_BATCH_SIZE = 1;
     public static final String DEFAULT_FUZZ_START_METHOD = "fuzzerTestOneInput";
+    public static final String DEFAULT_KEY_MEMORY = "8g";
 
     public static void main(String[] args) throws Exception {
         if (args.length == 0) {
@@ -203,7 +206,9 @@ public class Main {
             int fuzzDuration,
             int batchSize,
             String startMethodName,
-            String[] programArgs
+            String[] programArgs,
+            Path inputSizesFile,
+            String keyMemory
     ) {
     }
 
@@ -215,6 +220,8 @@ public class Main {
         int batchSize = 1;
         String startMethodName = command.equals(FUZZ) ? DEFAULT_FUZZ_START_METHOD : DEFAULT_START_METHOD_NAME;
         String[] programArgs = new String[0];
+        Path inputSizesFile = null;
+        String keyMemory = DEFAULT_KEY_MEMORY;
 
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
@@ -239,6 +246,20 @@ public class Main {
                         throw new IllegalArgumentException("--batch-size requires a value");
                     }
                     batchSize = Integer.parseInt(args[++i]);
+                }
+                case "--input-sizes" -> {
+                    if (i + 1 >= args.length) {
+                        System.err.print(USAGE);
+                        throw new IllegalArgumentException("--input-sizes requires a value");
+                    }
+                    inputSizesFile = Path.of(args[++i]);
+                }
+                case "--key-memory" -> {
+                    if (i + 1 >= args.length) {
+                        System.err.print(USAGE);
+                        throw new IllegalArgumentException("--key-memory requires a value");
+                    }
+                    keyMemory = args[++i];
                 }
                 case "-o" -> {
                     if (i + 1 >= args.length) {
@@ -281,7 +302,7 @@ public class Main {
             }
         }
 
-        return new TraceArgs(input, output, binary, fuzzDuration, batchSize, startMethodName, programArgs);
+        return new TraceArgs(input, output, binary, fuzzDuration, batchSize, startMethodName, programArgs, inputSizesFile, keyMemory);
     }
 
 // ---- shared helpers ----

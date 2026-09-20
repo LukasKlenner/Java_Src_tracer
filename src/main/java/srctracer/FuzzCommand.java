@@ -16,6 +16,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Random;
 import java.util.Set;
 
 class FuzzCommand {
@@ -32,9 +33,6 @@ class FuzzCommand {
         Path runtimeJar = Main.resolveRuntimeJar(args.binary());
         String className = Main.classNameFrom(args.input());
 
-        String fuzzerSource = Files.readString(args.input().resolveSibling(args.input().getFileName().toString().replace(".java", "Assert.java")));
-        Path fuzzerCompileDir = Files.createTempDirectory("srctracer-fuzz-");
-
         Path functionDbFile = args.output().resolve(Main.DEFAULT_FUNCTION_DB_NAME);
         String instrumentedSource;
         try (var dbWriter = new CsvFunctionDatabaseWriter(functionDbFile)) {
@@ -42,9 +40,14 @@ class FuzzCommand {
             instrumentedSource = instrumenter.transformToString(args.input());
         }
         Path instrumentedCompileDir = Files.createTempDirectory("srctracer-inst-");
-
-        Main.compile(fuzzerSource, className, fuzzerCompileDir, runtimeJar); // TODO das hier braucht eigentlich nicht runtimeJar
         Main.compile(instrumentedSource, className, instrumentedCompileDir, runtimeJar);
+
+        Path fuzzerCompileDir = null;
+        if (args.inputSizesFile() == null) {
+            String fuzzerSource = Files.readString(args.input().resolveSibling(args.input().getFileName().toString().replace(".java", "Assert.java")));
+            fuzzerCompileDir = Files.createTempDirectory("srctracer-fuzz-");
+            Main.compile(fuzzerSource, className, fuzzerCompileDir, runtimeJar);
+        }
 
         Path corpusDir = args.output().resolve("corpus");
         Files.createDirectories(corpusDir);
@@ -55,6 +58,59 @@ class FuzzCommand {
         Path keyInputsDir = args.output().resolve("key-inputs");
         Files.createDirectories(keyInputsDir);
 
+        int[] result;
+
+        if (args.inputSizesFile() != null) {
+            result = runWithInputSizes(args, className, instrumentedCompileDir, runtimeJar,
+                    corpusDir, tracesDir, keyInputsDir, functionDbFile);
+        } else {
+            result = runWithJazzer(args, className, fuzzerCompileDir, instrumentedCompileDir, runtimeJar,
+                    corpusDir, tracesDir, keyInputsDir, functionDbFile);
+        }
+
+        if (fuzzerCompileDir != null) Main.deleteRecursive(fuzzerCompileDir);
+        Main.deleteRecursive(instrumentedCompileDir);
+
+        int inputCount = result[0], bugsFound = result[1];
+        System.out.println("Complete. Processed " + inputCount + " inputs, " + bugsFound + " potential bug(s) found. Output in: " + args.output());
+    }
+
+    private static int[] runWithInputSizes(
+            Main.TraceArgs args, String className, Path instrumentedCompileDir, Path runtimeJar,
+            Path corpusDir, Path tracesDir, Path keyInputsDir, Path functionDbFile
+    ) throws Exception {
+        String content = Files.readString(args.inputSizesFile()).trim();
+        String[] parts = content.split(",");
+        int[] sizes = new int[parts.length];
+        for (int i = 0; i < parts.length; i++) {
+            sizes[i] = Integer.parseInt(parts[i].trim());
+        }
+
+        Random rng = new Random(42);
+        int batchCounter = 0;
+        int bugsFound = 0;
+
+        System.out.println("Running with " + sizes.length + " prepared input sizes ...");
+
+        for (int size : sizes) {
+            byte[] inputBytes = new byte[size];
+            rng.nextBytes(inputBytes);
+
+            Path inputFile = corpusDir.resolve("input-" + size);
+            Files.write(inputFile, inputBytes);
+
+            Path keyDir = prepareCorpusEntry(inputFile, className, instrumentedCompileDir, runtimeJar,
+                    args.binary(), tracesDir, keyInputsDir, args.input(), functionDbFile);
+            bugsFound += runPendingKeyInputsAndCheck(new ArrayList<>(List.of(keyDir)), args.output(), batchCounter++, args.keyMemory());
+        }
+
+        return new int[]{sizes.length, bugsFound};
+    }
+
+    private static int[] runWithJazzer(
+            Main.TraceArgs args, String className, Path fuzzerCompileDir, Path instrumentedCompileDir,
+            Path runtimeJar, Path corpusDir, Path tracesDir, Path keyInputsDir, Path functionDbFile
+    ) throws Exception {
         System.out.println("Starting Jazzer for " + args.fuzzDuration() + "s ...");
         Process jazzerProcess = startJazzer(className, fuzzerCompileDir, corpusDir, args.fuzzDuration(), args.output());
 
@@ -83,11 +139,9 @@ class FuzzCommand {
                 }
 
                 for (Path keyDir : pendingKeyDirs) {
-                    bugsFound += runPendingKeyInputsAndCheck(new ArrayList<>(List.of(keyDir)), args.output(), batchCounter++);
-                    // TODO pass all at once and decide where to clear
+                    bugsFound += runPendingKeyInputsAndCheck(new ArrayList<>(List.of(keyDir)), args.output(), batchCounter++, args.keyMemory());
                 }
                 pendingKeyDirs.clear();
-
             }
         } finally {
             if (jazzerProcess.isAlive()) {
@@ -100,10 +154,7 @@ class FuzzCommand {
         int exitCode = jazzerProcess.exitValue();
         System.out.println("Jazzer exited with code " + exitCode + " (log: " + args.output().resolve("jazzer.log") + ")");
 
-        Main.deleteRecursive(fuzzerCompileDir);
-        Main.deleteRecursive(instrumentedCompileDir);
-
-        System.out.println("Fuzzing complete. Processed " + processedFiles.size() + " inputs, " + bugsFound + " potential bug(s) found. Output in: " + args.output());
+        return new int[]{processedFiles.size(), bugsFound};
     }
 
     private static Path prepareCorpusEntry(
@@ -159,7 +210,7 @@ class FuzzCommand {
         return keyDir;
     }
 
-    private static int runPendingKeyInputsAndCheck(List<Path> pendingKeyDirs, Path outputDir, int batchIndex) throws Exception {
+    private static int runPendingKeyInputsAndCheck(List<Path> pendingKeyDirs, Path outputDir, int batchIndex, String keyMemory) throws Exception {
         List<Path> proofFiles = new ArrayList<>();
         for (Path keyDir : pendingKeyDirs) {
             Path proofKey = keyDir.resolve("proof.key");
@@ -172,7 +223,7 @@ class FuzzCommand {
 
         System.out.println("Running KeY batch " + batchIndex + " with " + proofFiles.size() + " proof(s) ...");
         Path keyLog = outputDir.resolve("key-batch-" + batchIndex + ".log");
-        runKeyBatch(proofFiles, keyLog);
+        runKeyBatch(proofFiles, keyLog, keyMemory);
 
         int bugsFound = 0;
         for (Path keyDir : pendingKeyDirs) {
@@ -245,10 +296,10 @@ class FuzzCommand {
         return pb.start();
     }
 
-    private static void runKeyBatch(List<Path> proofKeyFiles, Path logFile) throws Exception {
+    private static void runKeyBatch(List<Path> proofKeyFiles, Path logFile, String keyMemory) throws Exception {
 
         for (Path p : proofKeyFiles) {
-            runKey(p);
+            runKey(p, keyMemory);
         }
 // TODO fix
 //        Path keyJar = resolveKeyJar();
@@ -271,11 +322,11 @@ class FuzzCommand {
 //        System.out.println("  KeY batch exited with code " + exitCode + " (log: " + logFile + ")");
     }
 
-    private static void runKey(Path proofKeyFile) throws Exception {
+    private static void runKey(Path proofKeyFile, String keyMemory) throws Exception {
         Path keyJar = resolveKeyJar();
 
         List<String> command = List.of(
-                "java", "-jar", keyJar.toAbsolutePath().toString(),
+                "java", "-Xmx" + keyMemory, "-jar", keyJar.toAbsolutePath().toString(),
                 "--auto", proofKeyFile.toAbsolutePath().toString()
         );
 
