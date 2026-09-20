@@ -1,0 +1,14 @@
+class SumSimple {
+
+    public static void fuzzerTestOneInput(byte[] data) {
+        sum(data);
+    }
+
+    private static void sum(byte[] arr) {
+        int sum = 0;
+
+        for (int i = 0; i < arr.length; i++) {
+            sum += 1;
+        }
+    }
+}
