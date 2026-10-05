@@ -9,7 +9,9 @@ import javax.tools.JavaFileObject;
 import javax.tools.SimpleJavaFileObject;
 import javax.tools.ToolProvider;
 import java.io.ByteArrayOutputStream;
+import java.io.FileOutputStream;
 import java.io.OutputStream;
+import java.io.OutputStreamWriter;
 import java.io.StringWriter;
 import java.io.Writer;
 import java.lang.reflect.InvocationTargetException;
@@ -17,6 +19,7 @@ import java.lang.reflect.Method;
 import java.net.URI;
 import java.net.URL;
 import java.net.URLClassLoader;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
@@ -53,6 +56,7 @@ public class Main {
 
     public static final String DEFAULT_FUNCTION_DB_NAME = "functions.csv";
 
+    public static final String DEFAULT_INSTRUMENT_OUTPUT_DIR = "instrument-out";
     public static final String DEFAULT_TRACE_OUTPUT_DIR = "trace-out";
     public static final String DEFAULT_KEY_OUTPUT_DIR = "key-out";
     public static final String DEFAULT_FUZZ_OUTPUT_DIR = "fuzz-out";
@@ -75,6 +79,7 @@ public class Main {
         String[] rest = Arrays.copyOfRange(args, 1, args.length);
 
         TraceArgs parsedArgs = parseTraceArgs(rest, command);
+        Files.createDirectories(parsedArgs.output);
 
         switch (command) {
             case INSTRUMENT -> instrument(parsedArgs);
@@ -93,10 +98,10 @@ public class Main {
     private static void instrument(TraceArgs args) throws Exception {
         Path runtimeJar = resolveRuntimeJar(false);
 
-        try (FunctionDatabaseWriter dbWriter = new CsvFunctionDatabaseWriter(args.output.resolveSibling(DEFAULT_FUNCTION_DB_NAME))) {
+        try (FunctionDatabaseWriter dbWriter = new CsvFunctionDatabaseWriter(args.output.resolve(DEFAULT_FUNCTION_DB_NAME))) {
             Instrumenter instrumenter = new Instrumenter(dbWriter, List.of(args.input.getParent()), List.of(runtimeJar), args.startMethodName);
 
-            instrumenter.transform(args.input, args.output);
+            instrumenter.transform(args.input, args.output.resolve(args.input.getFileName().toString().replace(".java", ".instrumented.java")));
         }
 
         System.out.println("Wrote instrumented source: " + args.output);
@@ -121,6 +126,13 @@ public class Main {
         compile(instrumentedSource, className, tempDir, runtimeJar);
 
         try (URLClassLoader cl = createClassLoader(tempDir, runtimeJar)) {
+            Path traceFile = args.output.resolve(className + ".trace" + (args.binary ? "" : ".txt"));
+            OutputStreamWriter out = new OutputStreamWriter(
+                    new FileOutputStream(traceFile.toFile()),
+                    StandardCharsets.UTF_8);
+
+            Class<?> traceClass = cl.loadClass("srctracer.Trace");
+            traceClass.getMethod("trace_start", Writer.class).invoke(null, out);
 
             Class<?> userClass = cl.loadClass(className);
             Method userMain = userClass.getMethod("main", String[].class);
@@ -215,9 +227,9 @@ public class Main {
     private static TraceArgs parseTraceArgs(String[] args, String command) {
         Path input = null;
         Path output = null;
-        boolean binary = false;
-        int fuzzDuration = 15;
-        int batchSize = 1;
+        boolean binary = DEFAULT_BINARY_TRACE;
+        int fuzzDuration = DEFAULT_FUZZ_DURATION;
+        int batchSize = DEFAULT_FUZZ_BATCH_SIZE;
         String startMethodName = command.equals(FUZZ) ? DEFAULT_FUZZ_START_METHOD : DEFAULT_START_METHOD_NAME;
         String[] programArgs = new String[0];
         Path inputSizesFile = null;
@@ -295,7 +307,7 @@ public class Main {
 
             String fileName = input.getFileName().toString().replace(".java", "");
             switch (command) {
-                case INSTRUMENT -> output = input.resolveSibling(fileName + ".instrumented.java");
+                case INSTRUMENT -> output = Path.of(DEFAULT_INSTRUMENT_OUTPUT_DIR, fileName + "_" + timestamp);
                 case TRACE -> output = Path.of(DEFAULT_TRACE_OUTPUT_DIR, fileName + "_" + timestamp);
                 case ANNOTATE -> output = Path.of(DEFAULT_KEY_OUTPUT_DIR, fileName + "_" + timestamp);
                 case FUZZ -> output = Path.of(DEFAULT_FUZZ_OUTPUT_DIR, fileName + "_" + timestamp);

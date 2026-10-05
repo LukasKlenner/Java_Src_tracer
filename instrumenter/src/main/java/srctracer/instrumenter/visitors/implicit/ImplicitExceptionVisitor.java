@@ -38,7 +38,11 @@ import java.util.function.Consumer;
 
 import static com.github.javaparser.StaticJavaParser.parseStatement;
 import static srctracer.instrumenter.Instrumenter.MAIN_LIFECYCLE_CATCH_PARAM;
+import static srctracer.util.JavaParserUtil.alwaysExits;
+import static srctracer.util.JavaParserUtil.alwaysExitsLoop;
 import static srctracer.util.JavaParserUtil.isMainMethod;
+import static srctracer.util.JavaParserUtil.resolvedToAstType;
+import static srctracer.util.JavaParserUtil.wrapInSwitchExpression;
 
 /**
  * Further instruments the given {@link CompilationUnit} to trace implicit exceptions, such as those thrown by arithmetic operations or null dereferences.
@@ -149,7 +153,12 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
     @Override
     public Visitable visit(ExplicitConstructorInvocationStmt n, Void a) {
         super.visit(n, a);
-        addImplicitExceptionChecks(n);
+        for (int i = 0; i < n.getArguments().size(); i++) {
+            Expression arg = n.getArguments().get(i).clone();
+
+            n.setArgument(i, wrapInSwitchExpression(arg));
+            addImplicitExceptionChecks((Statement) arg.getParentNode().get());
+        }
         return n;
     }
 
@@ -175,15 +184,6 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
             }
             case WhileStmt ws ->
                     rewriteExpression(ws.getCondition(), EvaluationContext.LOOP_CONDITION, ws::setCondition);
-            case ExplicitConstructorInvocationStmt ecis -> {
-                NodeList<Statement> checksForArgs = new NodeList<>();
-                for (int i = 0; i < ecis.getArguments().size(); i++) {
-                    Expression arg = ecis.getArguments().get(i);
-                    int finalI = i;
-                    checksForArgs.addAll(rewriteExpression(arg, EvaluationContext.NORMAL, expr -> ecis.setArgument(finalI, expr)));
-                }
-                yield checksForArgs;
-            }
             case SwitchStmt ss ->
                 rewriteExpression(ss.getSelector(), EvaluationContext.SWITCH_SELECTOR, ss::setSelector);
 
@@ -196,7 +196,7 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
 
         addBeforeStatement(stmt, checks);
 
-        if (stmt instanceof WhileStmt whileStmt) {
+        if (stmt instanceof WhileStmt whileStmt && !alwaysExitsLoop(whileStmt.getBody())) {
             whileStmt.getBody().asBlockStmt().getStatements().addAll(toLoopRefreshChecks(checks));
         }
     }
@@ -236,6 +236,14 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
     private BlockStmt rewriteForEachArrayToWhile(ForEachStmt forEachStmt) {
         VariableDeclarator variable = forEachStmt.getVariable().getVariable(0);
 
+        // store array in a temporary variable to avoid re-evaluating the expression in each iteration
+        String arrayExpr = "__srctracer_tmp$" + nextTmpId++;
+        VariableDeclarator arrayTemp = new VariableDeclarator(
+                resolvedToAstType(forEachStmt.getIterable().calculateResolvedType()),
+                arrayExpr,
+                forEachStmt.getIterable().clone()
+        );
+
         // int __srctracer_tmp$index = 0;
         VariableDeclarator index = new VariableDeclarator(
                 new ClassOrInterfaceType(null, "int"),
@@ -248,7 +256,7 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
         whileStmt.setCondition(
                 new BinaryExpr(
                         new NameExpr(index.getNameAsString()),
-                        new FieldAccessExpr(forEachStmt.getIterable().clone(), "length"),
+                        new FieldAccessExpr(new NameExpr(arrayExpr), "length"),
                         BinaryExpr.Operator.LESS
                 )
         );
@@ -261,7 +269,7 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
         VariableDeclarator element = new VariableDeclarator(
                 variable.getType().clone(),
                 variable.getNameAsString(),
-                new ArrayAccessExpr(forEachStmt.getIterable().clone(), new NameExpr(index.getNameAsString()))
+                new ArrayAccessExpr(new NameExpr(arrayExpr), new NameExpr(index.getNameAsString()))
         );
 
         // add after loop enter recording
@@ -277,6 +285,7 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
         whileStmt.setBody(body);
 
         BlockStmt outer = new BlockStmt();
+        outer.addStatement(new ExpressionStmt(new VariableDeclarationExpr(arrayTemp)));
         outer.addStatement(new ExpressionStmt(new VariableDeclarationExpr(index)));
         outer.addStatement(whileStmt);
 

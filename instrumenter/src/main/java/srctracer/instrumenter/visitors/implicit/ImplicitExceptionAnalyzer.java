@@ -7,6 +7,7 @@ import com.github.javaparser.ast.expr.ArrayInitializerExpr;
 import com.github.javaparser.ast.expr.AssignExpr;
 import com.github.javaparser.ast.expr.BinaryExpr;
 import com.github.javaparser.ast.expr.CastExpr;
+import com.github.javaparser.ast.expr.ConditionalExpr;
 import com.github.javaparser.ast.expr.EnclosedExpr;
 import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.expr.FieldAccessExpr;
@@ -23,6 +24,7 @@ import com.github.javaparser.resolution.declarations.ResolvedEnumConstantDeclara
 import com.github.javaparser.resolution.declarations.ResolvedFieldDeclaration;
 
 import static srctracer.util.JavaParserUtil.isLongOrInt;
+import static srctracer.util.JavaParserUtil.isSimpleExpression;
 import static srctracer.util.JavaParserUtil.switchNeedsNullCheck;
 
 public final class ImplicitExceptionAnalyzer {
@@ -48,9 +50,19 @@ public final class ImplicitExceptionAnalyzer {
             SwitchStmt switchStmt = expression.findAncestor(SwitchStmt.class)
                     .orElseThrow(() -> new IllegalStateException("Switch selector must be inside a switch statement"));
 
-            if (switchNeedsNullCheck(switchStmt)) {
+            if (!switchNeedsNullCheck(switchStmt)) {
+                plan.addStep(new NoImplicitExceptionStep(1));
+            } else {
                 plan.addStep(new CheckStep(new NullCheck(new NameExpr(slot))));
             }
+
+            plan.setResult(new NameExpr(slot));
+            return plan;
+        } else if (context == EvaluationContext.LOOP_CONDITION) {
+            EvaluationPlan plan = new EvaluationPlan();
+            Expression value = extractToValue(expression, plan, EvaluationContext.NORMAL);
+            String slot = newSlot();
+            plan.addStep(new EvaluateStep(slot, value.clone(), false));
             plan.setResult(new NameExpr(slot));
             return plan;
         }
@@ -69,6 +81,7 @@ public final class ImplicitExceptionAnalyzer {
             case BinaryExpr binaryExpr -> analyzeBinary(binaryExpr, context);
             case UnaryExpr unaryExpr -> analyzeUnary(unaryExpr, context);
             case EnclosedExpr enclosedExpr -> analyzeEnclosed(enclosedExpr, context);
+            case ConditionalExpr conditionalExpr -> analyzeConditional(conditionalExpr, context);
             default -> {
                 EvaluationPlan emptyPlan = new EvaluationPlan();
                 emptyPlan.setResult(expression.clone());
@@ -181,16 +194,14 @@ public final class ImplicitExceptionAnalyzer {
     private EvaluationPlan analyzeCast(CastExpr expression, EvaluationContext context) {
         EvaluationPlan plan = new EvaluationPlan();
 
-        if (expression.getType().isPrimitiveType()) {
-            plan.setResult(expression);
-            return plan;
-        }
-
         CastExpr rewritten = expression.clone();
 
         Expression value = extractToValue(expression.getExpression(), plan, EvaluationContext.NORMAL);
-        plan.addStep(new CheckStep(new CastCheck(value.clone(), rewritten.getType().asString())));
         rewritten.setExpression(value);
+
+        if (!expression.getType().isPrimitiveType()) {
+            plan.addStep(new CheckStep(new CastCheck(value.clone(), rewritten.getType().asString())));
+        }
 
         plan.setResult(rewritten);
         return plan;
@@ -208,9 +219,6 @@ public final class ImplicitExceptionAnalyzer {
                 level.setDimension(dimValue);
             }
         }
-
-        // TODO wie viele bei mehreren Dimensionen? 1 pro Dimension?
-        plan.addStep(new NoImplicitExceptionStep(1));
 
         if (expression.getInitializer().isPresent()) {
             EvaluationPlan initPlan = analyzeArrayInitializer(expression.getInitializer().get(), EvaluationContext.NORMAL);
@@ -231,7 +239,6 @@ public final class ImplicitExceptionAnalyzer {
             rewritten.setArgument(i, argValue);
         }
 
-        plan.addStep(new NoImplicitExceptionStep(1));
         plan.setResult(rewritten);
         return plan;
     }
@@ -342,24 +349,29 @@ public final class ImplicitExceptionAnalyzer {
         return plan;
     }
 
+    private EvaluationPlan analyzeConditional(ConditionalExpr expression, EvaluationContext context) {
+        ConditionalExpr rewritten = expression.clone();
+        EvaluationPlan plan = new EvaluationPlan();
+
+        Expression conditionValue = extractToValue(expression.getCondition(), plan, context);
+        rewritten.setCondition(conditionValue);
+
+        plan.setResult(rewritten);
+        return plan;
+    }
+
     private Expression extractToValue(Expression expression, EvaluationPlan targetPlan, EvaluationContext context) {
         if (isSimpleExpression(expression)) {
             return expression.clone();
         }
 
         EvaluationPlan nested = analyzeExpression(expression, context);
+
         targetPlan.addAll(nested);
 
         String slot = newSlot();
         targetPlan.addStep(new EvaluateStep(slot, nested.getResult().clone()));
         return new NameExpr(slot);
-    }
-
-    private static boolean isSimpleExpression(Expression expression) {
-        return expression instanceof NameExpr
-                || expression instanceof ThisExpr
-                || expression instanceof SuperExpr
-                || expression instanceof LiteralExpr;
     }
 
     private static boolean isNullSafe(Expression expression) {

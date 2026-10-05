@@ -28,8 +28,8 @@ public final class Trace {
     public static void _FUNC(int id) { write("C" + Integer.toHexString(id)); }
     public static void _IF()         { write("I"); }
     public static void _ELSE()       { write("O"); }
-    public static void _LOOP_BODY()  { if (!breakBefore) write("I"); breakBefore = false; }
-    public static void _LOOP_END()   { if (!breakBefore) write("O"); breakBefore = false; }
+    public static void _LOOP_BODY()  { if (!breakBefore) _IF(); breakBefore = false; }
+    public static void _LOOP_END()   { if (!breakBefore) _ELSE(); breakBefore = false; }
     public static void _BREAK()      { breakBefore = true; }
     public static void _RETURN()     { write("R"); }
 
@@ -43,12 +43,20 @@ public final class Trace {
         }
     }
 
-    public static void _IMPLICIT_EXCEPTION()    { write("I"); }
-    public static void _NO_IMPLICIT_EXCEPTION() { write("O"); }
+    public static void _IMPLICIT_EXCEPTION()    { _IF(); }
+    public static void _NO_IMPLICIT_EXCEPTION() { _ELSE(); }
 
-    public static void _TRY(int catchCount) {
+    public static boolean _COND(boolean condition) {
+        if (condition) {
+            _IF();
+        } else {
+            _ELSE();
+        }
+        return condition;
+    }
+
+    public static void _TRY() {
         write("T");
-        totalCatchCount += catchCount;
     }
 
     public static void _TRY_END() {

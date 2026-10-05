@@ -96,6 +96,18 @@ public final class Trace {
         breakBefore = false;
     }
 
+    public static void _IMPLICIT_EXCEPTION()    { _IF(); }
+    public static void _NO_IMPLICIT_EXCEPTION() { _ELSE(); }
+
+    public static boolean _TERNARY(int id, boolean condition) {
+        if (condition) {
+            _IF();
+        } else {
+            _ELSE();
+        }
+        return condition;
+    }
+
     public static void _BREAK() {
         breakBefore = true;
     }

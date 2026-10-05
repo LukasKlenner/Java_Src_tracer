@@ -3,6 +3,7 @@ build/
 *.class
 trace-out/
 key-out/
+instrument-out/
 .idea/
 *.iml
 .vscode/

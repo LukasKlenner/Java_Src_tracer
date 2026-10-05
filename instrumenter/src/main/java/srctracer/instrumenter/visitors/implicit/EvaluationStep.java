@@ -6,7 +6,11 @@ public sealed interface EvaluationStep
         permits EvaluateStep, CheckStep, BranchStep, NoImplicitExceptionStep {
 }
 
-record EvaluateStep(String slot, Expression expression) implements EvaluationStep {
+record EvaluateStep(String slot, Expression expression, boolean isFinal) implements EvaluationStep {
+
+    EvaluateStep(String slot, Expression expression) {
+        this(slot, expression, true);
+    }
 }
 
 record CheckStep(ImplicitCheck check) implements EvaluationStep {

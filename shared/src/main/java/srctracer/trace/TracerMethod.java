@@ -7,10 +7,11 @@ public enum TracerMethod {
     ELSE("_ELSE", 0),
     LOOP_BODY("_LOOP_BODY", 0),
     LOOP_END("_LOOP_END", 0),
+    COND("_COND", 0),
     BREAK("_BREAK", 0),
     RETURN("_RETURN", 0),
     CASE("_CASE", 1),
-    TRY("_TRY", 1),
+    TRY("_TRY", 0),
     TRY_END("_TRY_END", 0),
     CATCH("_CATCH", 1),
     IMPLICIT_EXCEPTION("_IMPLICIT_EXCEPTION", 0),
@@ -34,12 +35,16 @@ public enum TracerMethod {
         }
 
         StringBuilder sb = new StringBuilder();
-        sb.append("srctracer.Trace.").append(methodName).append("(");
+        sb.append(getMethodName()).append("(");
         for (int i = 0; i < numArgs; i++) {
             if (i > 0) sb.append(", ");
             sb.append(args[i]);
         }
-        sb.append(");");
+        sb.append(")");
         return sb.toString();
+    }
+
+    public String getMethodName() {
+        return "srctracer.Trace." + methodName;
     }
 }

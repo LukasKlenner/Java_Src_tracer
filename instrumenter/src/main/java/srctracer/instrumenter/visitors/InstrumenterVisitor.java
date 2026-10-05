@@ -5,6 +5,12 @@ import com.github.javaparser.ast.NodeList;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.body.Parameter;
 import com.github.javaparser.ast.body.TypeDeclaration;
+import com.github.javaparser.ast.body.VariableDeclarator;
+import com.github.javaparser.ast.expr.ArrayAccessExpr;
+import com.github.javaparser.ast.expr.AssignExpr;
+import com.github.javaparser.ast.expr.CastExpr;
+import com.github.javaparser.ast.expr.ConditionalExpr;
+import com.github.javaparser.ast.expr.EnclosedExpr;
 import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.stmt.BlockStmt;
 import com.github.javaparser.ast.stmt.BreakStmt;
@@ -23,24 +29,32 @@ import com.github.javaparser.ast.stmt.WhileStmt;
 import com.github.javaparser.ast.type.Type;
 import com.github.javaparser.ast.visitor.ModifierVisitor;
 import com.github.javaparser.ast.visitor.Visitable;
+import com.github.javaparser.resolution.types.ResolvedPrimitiveType;
+import com.github.javaparser.resolution.types.ResolvedType;
 import srctracer.database.FunctionDatabaseWriter;
 import srctracer.trace.TracerField;
 import srctracer.trace.TracerMethod;
 import srctracer.util.FunctionSignature;
+import srctracer.util.JavaParserUtil;
 
 import java.util.Optional;
 
 import static com.github.javaparser.StaticJavaParser.parseType;
 import static srctracer.instrumenter.Instrumenter.MAIN_LIFECYCLE_CATCH_PARAM;
+import static srctracer.util.JavaParserUtil.alwaysExits;
 import static srctracer.util.JavaParserUtil.findEnclosingReturnType;
 import static srctracer.util.JavaParserUtil.insertAfter;
 import static srctracer.util.JavaParserUtil.insertBefore;
 import static srctracer.util.JavaParserUtil.isBreakForSwitch;
 import static srctracer.util.JavaParserUtil.isInsideLambda;
 import static srctracer.util.JavaParserUtil.isMainMethod;
+import static srctracer.util.JavaParserUtil.isNarrowPrimitive;
 import static srctracer.util.JavaParserUtil.parseStatement;
 import static srctracer.util.JavaParserUtil.parseTracerCall;
-import static srctracer.util.JavaParserUtil.parseTracerFieldLoad;
+import static srctracer.util.JavaParserUtil.parseTracerCallExpr;
+import static srctracer.util.JavaParserUtil.resolvedToAstType;
+import static srctracer.util.JavaParserUtil.unwrapEnclosed;
+import static srctracer.util.JavaParserUtil.wrapInSwitchExpression;
 
 public class InstrumenterVisitor extends ModifierVisitor<Void> {
 
@@ -118,7 +132,7 @@ public class InstrumenterVisitor extends ModifierVisitor<Void> {
 
         BlockStmt tryBlock = new BlockStmt();
         // TODO this (and the catch) is only needed for key retracing and do not atually exists in the original method
-        tryBlock.addStatement(parseTracerCall(TracerMethod.TRY, 1));
+        tryBlock.addStatement(parseTracerCall(TracerMethod.TRY));
         for (Statement s : original.getStatements()) {
             tryBlock.addStatement(s.clone());
         }
@@ -133,7 +147,7 @@ public class InstrumenterVisitor extends ModifierVisitor<Void> {
         CatchClause catchClause = new CatchClause();
         catchClause.setParameter(new Parameter(parseType("java.lang.Throwable"), MAIN_LIFECYCLE_CATCH_PARAM));
         BlockStmt catchBody = new BlockStmt();
-        catchBody.addStatement(parseTracerCall(TracerMethod.CATCH, "0"));
+        catchBody.addStatement(parseTracerCall(TracerMethod.CATCH, TracerField.TOTAL_CATCH_COUNT.getFieldAccessString()));
         catchBody.addStatement(parseStatement("throw " + MAIN_LIFECYCLE_CATCH_PARAM + ";"));
         catchClause.setBody(catchBody);
         tryStmt.setCatchClauses(new NodeList<>(catchClause));
@@ -218,6 +232,64 @@ public class InstrumenterVisitor extends ModifierVisitor<Void> {
         stats.incrementIfCount();
         return n;
     }
+
+    // ---- Ternary operator ----
+
+    @Override
+    public Visitable visit(ConditionalExpr n, Void a) {
+        n.setCondition((Expression) n.getCondition().accept(this, a));
+
+        Optional<Type> castType = computePreservationCast(n);
+
+        Expression thenExpr = n.getThenExpr().clone();
+        Expression elseExpr = n.getElseExpr().clone();
+
+        n.setThenExpr(wrapInSwitchExpression(thenExpr));
+        n.setElseExpr(wrapInSwitchExpression(elseExpr));
+
+        insertBefore(thenExpr.getParentNode().get(), parseTracerCall(TracerMethod.IF));
+        insertBefore(elseExpr.getParentNode().get(), parseTracerCall(TracerMethod.ELSE));
+
+        thenExpr.accept(this, a);
+        elseExpr.accept(this, a);
+
+        stats.incrementTernaryCount();
+        return castType.<Visitable>map(t -> new CastExpr(t, new EnclosedExpr(n))).orElse(n);
+    }
+
+    private Optional<Type> computePreservationCast(ConditionalExpr n) {
+        ResolvedType ternaryType = n.calculateResolvedType();
+
+        // Issue 1: original type is char/byte/short because constant-fitting rule applied.
+        // After wrapping (no longer constant), binary promotion gives int instead.
+        if (isNarrowPrimitive(ternaryType)) {
+            ResolvedType thenType = n.getThenExpr().calculateResolvedType();
+            ResolvedType elseType = n.getElseExpr().calculateResolvedType();
+            if (thenType.equals(ResolvedPrimitiveType.INT) || elseType.equals(ResolvedPrimitiveType.INT))
+                return Optional.of(resolvedToAstType(ternaryType));
+        }
+
+        // Issue 2: ternary type is int assigned to byte/short/char.
+        // Original compiled → was a constant expression; wrapping loses constantness.
+        if (ternaryType.isPrimitive() && ternaryType.asPrimitive() == ResolvedPrimitiveType.INT)
+            return getAssignmentTargetType(n).filter(JavaParserUtil::isNarrowPrimitive);
+
+        return Optional.empty();
+    }
+
+    private Optional<Type> getAssignmentTargetType(ConditionalExpr n) {
+        Node parent = unwrapEnclosed(n.getParentNode().orElse(null));
+        if (parent instanceof VariableDeclarator vd)
+            return Optional.of(vd.getType());
+        if (parent instanceof AssignExpr ae) {
+            try { return Optional.of(resolvedToAstType(ae.getTarget().calculateResolvedType())); }
+            catch (Exception ignored) {}
+        }
+        if (parent instanceof ReturnStmt)
+            return n.findAncestor(MethodDeclaration.class).map(MethodDeclaration::getType);
+        return Optional.empty();
+    }
+
 
     // ---- Return ----
 
@@ -328,61 +400,70 @@ public class InstrumenterVisitor extends ModifierVisitor<Void> {
 
         BlockStmt tryBlock = n.getTryBlock();
         NodeList<CatchClause> catches = n.getCatchClauses();
+        int catchCount = catches.size();
 
-        String currentCatchCountVar = "__srctracer_current_catch_count_$" + nextTmpId++;
-        insertBefore(n, parseTracerFieldLoad(currentCatchCountVar, TracerField.TOTAL_CATCH_COUNT));
-        tryBlock.addStatement(0, parseTracerCall(TracerMethod.TRY, catches.size()));
+        String catchedExceptionVar = "__srctracer_catched_exception_$" + nextTmpId++;
+        insertBefore(n, parseStatement("boolean " + catchedExceptionVar + " = false;"));
+        tryBlock.addStatement(0, parseTracerCall(TracerMethod.TRY));
 
         // Append _TRY_END only if the body can fall through; otherwise Java
         // would reject the trailing call as unreachable code.
         if (!alwaysExits(tryBlock)) {
-            tryBlock.addStatement(parseTracerCall(TracerMethod.TRY_END));
+            tryBlock.addStatement(
+                    parseTracerCall(TracerMethod.TRY_END)
+            );
         }
 
+        // instrument catch blocks
         for (int i = 0; i < catches.size(); i++) {
             BlockStmt catchBody = catches.get(i).getBody();
-            catchBody.addStatement(0, parseTracerCall(TracerMethod.CATCH, currentCatchCountVar + " + " + i));
+
+            catchBody.addStatement(
+                    0,
+                    parseTracerCall(TracerMethod.CATCH, TracerField.TOTAL_CATCH_COUNT.getFieldAccessString() + " + " + i));
+            catchBody.addStatement(
+                    1,
+                    parseStatement(TracerField.TOTAL_CATCH_COUNT.getFieldAccessString() + " += " + catchCount + ";")
+            );
+            catchBody.addStatement(
+                    2,
+                    parseStatement(catchedExceptionVar + " = true;")
+            );
         }
+
+        // instrument finally block
+        BlockStmt finallyBlock = n.getFinallyBlock()
+                .orElseGet(() -> {
+                    BlockStmt block = new BlockStmt();
+                    n.setFinallyBlock(block);
+                    return block;
+                });
+
+        // only increment catch count if the exception was not catched by any of the catch blocks
+        finallyBlock.addStatement(
+                0,
+                parseStatement(
+                        "if (!" + catchedExceptionVar + ") {" +
+                                TracerField.TOTAL_CATCH_COUNT.getFieldAccessString() + " += " + catchCount + ";" +
+                                "}"
+                )
+        );
 
         stats.incrementTryCount();
         return n;
     }
 
-    public InstrumenterStats getStats() {
-        return stats;
+    // ---- Implicit Exceptions ----
+
+    @Override
+    public Visitable visit(ArrayAccessExpr n, Void a) {
+        super.visit(n, a);
+
+        return n;
     }
 
-    /**
-     * Best-effort check: does control flow always leave {@code s} via return/throw?
-     */
-    private static boolean alwaysExits(Statement s) {
-        if (s instanceof ReturnStmt) return true;
-        if (s instanceof ThrowStmt) return true;
-        if (s instanceof BlockStmt b) {
-            if (b.getStatements().isEmpty()) return false;
-            return alwaysExits(b.getStatement(b.getStatements().size() - 1));
-        }
-        if (s instanceof IfStmt i) {
-            return i.getElseStmt().isPresent()
-                    && alwaysExits(i.getThenStmt())
-                    && alwaysExits(i.getElseStmt().get());
-        }
-        if (s instanceof SwitchStmt sw) {
-            NodeList<SwitchEntry> entries = sw.getEntries();
-            boolean hasDefault = entries.stream().anyMatch(e -> e.getLabels().isEmpty());
-            if (!hasDefault) return false;
-
-            boolean currentGroupExits = false;
-            for (int i = entries.size() - 1; i >= 0; i--) {
-                NodeList<Statement> stmts = entries.get(i).getStatements();
-                if (!stmts.isEmpty()) {
-                    currentGroupExits = alwaysExits(stmts.getLast().get());
-                }
-                if (!currentGroupExits) return false;
-            }
-            return true;
-        }
-        return false;
+    public InstrumenterStats getStats() {
+        return stats;
     }
 
     // ---- Helpers ----

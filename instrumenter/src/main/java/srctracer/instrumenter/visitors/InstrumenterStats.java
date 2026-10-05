@@ -8,6 +8,7 @@ public class InstrumenterStats {
     private int loops = 0;
     private int switches = 0;
     private int tries = 0;
+    private int ternaries = 0;
     private int mains = 0;
     private int initializers = 0;
 
@@ -33,6 +34,10 @@ public class InstrumenterStats {
 
     public void incrementTryCount() {
         tries++;
+    }
+
+    public void incrementTernaryCount() {
+        ternaries++;
     }
 
     public void incrementMainCount() {
@@ -67,6 +72,10 @@ public class InstrumenterStats {
         return tries;
     }
 
+    public int getTernaryCount() {
+        return ternaries;
+    }
+
     public int getMainCount() {
         return mains;
     }
@@ -84,7 +93,8 @@ public class InstrumenterStats {
                 mains + " main wrapped, " +
                 loops + " loop, " +
                 switches + " switch, " +
-                tries + " try";
+                tries + " try" +
+                ternaries + " ternary";
     }
 
 }

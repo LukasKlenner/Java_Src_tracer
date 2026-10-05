@@ -5,7 +5,9 @@ import srctracer.util.FunctionSignature;
 import java.io.BufferedOutputStream;
 import java.io.PrintWriter;
 import java.nio.file.Files;
+import java.nio.file.OpenOption;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 
 public class CsvFunctionDatabaseWriter implements FunctionDatabaseWriter {
 

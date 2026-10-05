@@ -1,6 +1,7 @@
 package srctracer;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 
 public class KeyAnnotater {
@@ -24,6 +25,7 @@ public class KeyAnnotater {
             String targetMethodName
     ) throws IOException {
         KeySourceTransformer annotater = new KeySourceTransformer(targetMethodName);
+        Files.createDirectories(outputDir.resolve(JAVA_SOURCE_DIR));
         annotater.transform(inputFile, outputDir.resolve(Path.of(JAVA_SOURCE_DIR, inputFile.getFileName().toString())));
 
         KeyProofObligationCreator.createProofObligation(outputDir, annotater.getTracedMethod(), traceFile, functionDatabaseFile);

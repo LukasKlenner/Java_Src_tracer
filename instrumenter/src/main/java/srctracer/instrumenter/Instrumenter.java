@@ -1,7 +1,12 @@
 package srctracer.instrumenter;
 
+import com.github.javaparser.JavaParser;
+import com.github.javaparser.ParseResult;
+import com.github.javaparser.ParserConfiguration;
+import com.github.javaparser.Processor;
 import com.github.javaparser.StaticJavaParser;
 import com.github.javaparser.ast.CompilationUnit;
+import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.NodeList;
 import com.github.javaparser.ast.body.BodyDeclaration;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
@@ -13,13 +18,16 @@ import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.expr.ObjectCreationExpr;
 import com.github.javaparser.ast.stmt.BlockStmt;
+import com.github.javaparser.ast.validator.ProblemReporter;
 import com.github.javaparser.symbolsolver.JavaSymbolSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.CombinedTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.JarTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.JavaParserTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.ReflectionTypeSolver;
+import srctracer.Config;
 import srctracer.SourceTransformer;
 import srctracer.database.FunctionDatabaseWriter;
+import srctracer.instrumenter.validation.FeatureValidator;
 import srctracer.instrumenter.visitors.BlockWrappingVisitor;
 import srctracer.instrumenter.visitors.implicit.ImplicitExceptionVisitor;
 import srctracer.instrumenter.visitors.InstrumenterVisitor;
@@ -41,12 +49,26 @@ public class Instrumenter extends SourceTransformer {
     }
 
     public Instrumenter(FunctionDatabaseWriter functionDatabaseWriter, List<Path> sourceRoots, List<Path> jars, String lifecycleMethodName) throws IOException {
+        super(createJavaParser(sourceRoots, jars));
         this.functionDatabaseWriter = functionDatabaseWriter;
         this.lifecycleMethodName = lifecycleMethodName;
-        configureSolver(sourceRoots, jars);
     }
 
-    private static void configureSolver(List<Path> sourceRoots, List<Path> jars) throws IOException {
+    private static JavaParser createJavaParser(List<Path> sourceRoots, List<Path> jars) throws IOException {
+        ParserConfiguration cfg = new ParserConfiguration()
+                .setLanguageLevel(Config.DEFAULT_SOURCE_LANGUAGE_LEVEL);
+
+        // Feature validation
+        FeatureValidator fv = new FeatureValidator();
+        cfg.getProcessors().add(() -> new Processor() {
+            @Override
+            public void postProcess(ParseResult<? extends Node> r, ParserConfiguration c) {
+                r.getResult().ifPresent(n ->
+                        fv.accept(n, new ProblemReporter(r.getProblems()::add)));
+            }
+        });
+
+        // type solver
         CombinedTypeSolver typeSolver = new CombinedTypeSolver();
         typeSolver.add(new ReflectionTypeSolver());
         for (Path src : sourceRoots) {
@@ -55,8 +77,8 @@ public class Instrumenter extends SourceTransformer {
         for (Path jar : jars) {
             typeSolver.add(new JarTypeSolver(jar));
         }
-        StaticJavaParser.getParserConfiguration()
-                .setSymbolResolver(new JavaSymbolSolver(typeSolver));
+        cfg.setSymbolResolver(new JavaSymbolSolver(typeSolver));
+        return new JavaParser(cfg);
     }
 
     @Override

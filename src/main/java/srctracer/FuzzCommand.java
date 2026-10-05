@@ -2,6 +2,8 @@ package srctracer;
 
 import srctracer.database.CsvFunctionDatabaseWriter;
 import srctracer.instrumenter.Instrumenter;
+import srctracer.tools.Jazzer;
+import srctracer.tools.KeY;
 
 import java.io.ByteArrayOutputStream;
 import java.io.OutputStream;
@@ -22,13 +24,8 @@ import java.util.Set;
 class FuzzCommand {
 
     static final String FUZZ_TARGET_METHOD = "fuzzerTestOneInput";
-    private static final String JAZZER_DIR = "tools/jazzer";
-    private static final String JAZZER_EXE = "jazzer.exe";
-    private static final String KEY_DIR = "tools/key";
-    private static final String KEY_JAR = "key.jar";
 
     static void run(Main.TraceArgs args) throws Exception {
-        Files.createDirectories(args.output());
 
         Path runtimeJar = Main.resolveRuntimeJar(args.binary());
         String className = Main.classNameFrom(args.input());
@@ -112,7 +109,7 @@ class FuzzCommand {
             Path runtimeJar, Path corpusDir, Path tracesDir, Path keyInputsDir, Path functionDbFile
     ) throws Exception {
         System.out.println("Starting Jazzer for " + args.fuzzDuration() + "s ...");
-        Process jazzerProcess = startJazzer(className, fuzzerCompileDir, corpusDir, args.fuzzDuration(), args.output());
+        Process jazzerProcess = Jazzer.startJazzerAsync(className, fuzzerCompileDir, corpusDir, args.fuzzDuration(), args.output());
 
         Set<Path> processedFiles = new HashSet<>();
         List<Path> pendingKeyDirs = new ArrayList<>();
@@ -211,95 +208,33 @@ class FuzzCommand {
     }
 
     private static int runPendingKeyInputsAndCheck(List<Path> pendingKeyDirs, Path outputDir, int batchIndex, String keyMemory) throws Exception {
-        List<Path> proofFiles = new ArrayList<>();
-        for (Path keyDir : pendingKeyDirs) {
-            Path proofKey = keyDir.resolve("proof.key");
-            if (Files.exists(proofKey)) {
-                proofFiles.add(proofKey);
-            }
-        }
-
-        if (proofFiles.isEmpty()) return 0;
-
-        System.out.println("Running KeY batch " + batchIndex + " with " + proofFiles.size() + " proof(s) ...");
-        Path keyLog = outputDir.resolve("key-batch-" + batchIndex + ".log");
-        runKeyBatch(proofFiles, keyLog, keyMemory);
-
         int bugsFound = 0;
+
         for (Path keyDir : pendingKeyDirs) {
-            String dirName = keyDir.getFileName().toString();
-            boolean bugFound = checkKeyResult(keyDir);
-            if (bugFound) {
-                System.out.println("  >>> BUG FOUND on path from " + dirName + " (open goals > 0)");
-                bugsFound++;
-            } else {
-                System.out.println("  " + dirName + " verified (0 open goals)");
+            Path keyProofFile = keyDir.resolve("proof.key");
+            if (!Files.exists(keyProofFile)) {
+                continue;
             }
+
+            KeY keyInstance = new KeY(keyProofFile, keyMemory);
+            keyInstance.runKey();
+
+            if (keyInstance.isProofClosed()) {
+                System.out.println("  " + keyDir.getFileName() + " verified (0 open goals)");
+            } else {
+                System.out.println("  >>> BUG FOUND on path from " + keyDir.getFileName() + " (open goals > 0)");
+                bugsFound++;
+            }
+
         }
+
         return bugsFound;
-    }
-
-    private static Path findProjectRoot() {
-        Path dir = Path.of("").toAbsolutePath();
-        while (dir != null) {
-            if (Files.exists(dir.resolve("settings.gradle.kts"))) return dir;
-            dir = dir.getParent();
-        }
-        throw new RuntimeException("Cannot find project root (no settings.gradle.kts found)");
-    }
-
-    private static Path resolveJazzer() {
-        Path projectRoot = findProjectRoot();
-        Path jazzer = projectRoot.resolve(JAZZER_DIR).resolve(JAZZER_EXE);
-        if (!Files.exists(jazzer)) {
-            throw new RuntimeException("Jazzer not found: " + jazzer
-                    + "\nPlace jazzer.exe in " + projectRoot.resolve(JAZZER_DIR));
-        }
-        return jazzer;
-    }
-
-    private static Path resolveKeyJar() {
-        Path projectRoot = findProjectRoot();
-        Path jar = projectRoot.resolve(KEY_DIR).resolve(KEY_JAR);
-        if (!Files.exists(jar)) {
-            throw new RuntimeException("KeY JAR not found: " + jar
-                    + "\nPlace " + KEY_JAR + " in " + projectRoot.resolve(KEY_DIR));
-        }
-        return jar;
-    }
-
-    private static Process startJazzer(
-            String className,
-            Path classDir,
-            Path corpusDir,
-            int durationSeconds,
-            Path outputDir
-    ) throws Exception {
-        Path jazzer = resolveJazzer();
-
-        List<String> command = List.of(
-                jazzer.toAbsolutePath().toString(),
-                "--cp=" + classDir.toAbsolutePath(),
-                "--target_class=" + className,
-                "--keep_going=0",
-                String.format("-max_total_time=%d", durationSeconds),
-                corpusDir.toAbsolutePath().toString()
-        );
-
-        Path jazzerLog = outputDir.resolve("jazzer.log");
-
-        ProcessBuilder pb = new ProcessBuilder(command);
-        pb.directory(outputDir.toAbsolutePath().toFile());
-        pb.redirectOutput(jazzerLog.toFile());
-        pb.redirectErrorStream(true);
-
-        return pb.start();
     }
 
     private static void runKeyBatch(List<Path> proofKeyFiles, Path logFile, String keyMemory) throws Exception {
 
         for (Path p : proofKeyFiles) {
-            runKey(p, keyMemory);
+            new KeY(p, keyMemory).runKey();
         }
 // TODO fix
 //        Path keyJar = resolveKeyJar();
@@ -320,55 +255,6 @@ class FuzzCommand {
 //        int exitCode = process.waitFor();
 //
 //        System.out.println("  KeY batch exited with code " + exitCode + " (log: " + logFile + ")");
-    }
-
-    private static void runKey(Path proofKeyFile, String keyMemory) throws Exception {
-        Path keyJar = resolveKeyJar();
-
-        List<String> command = List.of(
-                "java", "-Xmx" + keyMemory, "-jar", keyJar.toAbsolutePath().toString(),
-                "--auto", proofKeyFile.toAbsolutePath().toString()
-        );
-
-        Path workingDir = proofKeyFile.getParent();
-        Path keyLog = workingDir.resolve("key.log");
-
-        ProcessBuilder pb = new ProcessBuilder(command);
-        pb.directory(workingDir.toFile());
-        pb.redirectOutput(keyLog.toFile());
-        pb.redirectErrorStream(true);
-        Process process = pb.start();
-        int exitCode = process.waitFor();
-
-        System.out.println("  KeY exited with code " + exitCode + " (log: " + keyLog + ")");
-    }
-
-    private static boolean checkKeyResult(Path keyDir) throws Exception {
-        Path csvFile = null;
-        try (DirectoryStream<Path> stream = Files.newDirectoryStream(keyDir, "*.csv")) {
-            for (Path entry : stream) {
-                if (entry.getFileName().toString().endsWith("functions.csv")) {
-                    continue;
-                }
-                csvFile = entry;
-                break;
-            }
-        }
-
-        if (csvFile == null) {
-            System.out.println("  Warning: no KeY result CSV found in " + keyDir);
-            return false;
-        }
-
-        for (String line : Files.readAllLines(csvFile)) {
-            if (line.startsWith("open goals;")) {
-                int openGoals = Integer.parseInt(line.substring("open goals;".length()).trim());
-                return openGoals > 0;
-            }
-        }
-
-        System.out.println("  Warning: no 'open goals' entry in " + csvFile);
-        return false;
     }
 
     private static List<Path> findNewCorpusEntries(Path corpusDir, Set<Path> processed) throws Exception {

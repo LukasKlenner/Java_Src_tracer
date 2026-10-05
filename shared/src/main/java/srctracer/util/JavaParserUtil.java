@@ -2,21 +2,37 @@ package srctracer.util;
 
 import com.github.javaparser.StaticJavaParser;
 import com.github.javaparser.ast.Node;
+import com.github.javaparser.ast.NodeList;
 import com.github.javaparser.ast.body.ConstructorDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.body.TypeDeclaration;
+import com.github.javaparser.ast.expr.EnclosedExpr;
 import com.github.javaparser.ast.expr.Expression;
+import com.github.javaparser.ast.expr.IntegerLiteralExpr;
 import com.github.javaparser.ast.expr.LambdaExpr;
+import com.github.javaparser.ast.expr.LiteralExpr;
+import com.github.javaparser.ast.expr.MethodCallExpr;
+import com.github.javaparser.ast.expr.NameExpr;
+import com.github.javaparser.ast.expr.SuperExpr;
+import com.github.javaparser.ast.expr.SwitchExpr;
+import com.github.javaparser.ast.expr.ThisExpr;
+import com.github.javaparser.ast.expr.UnaryExpr;
 import com.github.javaparser.ast.stmt.BlockStmt;
 import com.github.javaparser.ast.stmt.BreakStmt;
 import com.github.javaparser.ast.stmt.DoStmt;
 import com.github.javaparser.ast.stmt.ForEachStmt;
 import com.github.javaparser.ast.stmt.ForStmt;
+import com.github.javaparser.ast.stmt.IfStmt;
+import com.github.javaparser.ast.stmt.ReturnStmt;
 import com.github.javaparser.ast.stmt.Statement;
 import com.github.javaparser.ast.stmt.SwitchEntry;
 import com.github.javaparser.ast.stmt.SwitchStmt;
+import com.github.javaparser.ast.stmt.ThrowStmt;
 import com.github.javaparser.ast.stmt.WhileStmt;
+import com.github.javaparser.ast.stmt.YieldStmt;
 import com.github.javaparser.ast.type.ArrayType;
+import com.github.javaparser.ast.type.ClassOrInterfaceType;
+import com.github.javaparser.ast.type.PrimitiveType;
 import com.github.javaparser.ast.type.Type;
 import com.github.javaparser.resolution.types.ResolvedPrimitiveType;
 import com.github.javaparser.resolution.types.ResolvedType;
@@ -105,7 +121,11 @@ public class JavaParserUtil {
     }
 
     public static Statement parseTracerCall(TracerMethod method, Object... args) {
-        return parseStatement(method.getMethodCallString(args));
+        return parseStatement(method.getMethodCallString(args) + ";");
+    }
+
+    public static MethodCallExpr parseTracerCallExpr(TracerMethod method, Expression... args) {
+        return new MethodCallExpr(method.getMethodName(), args);
     }
 
     public static Statement parseTracerFieldLoad(String varName, TracerField field) {
@@ -120,6 +140,21 @@ public class JavaParserUtil {
         return StaticJavaParser.parseStatement(code);
     }
 
+    public static Expression wrapInSwitchExpression(Expression expression) {
+        return new SwitchExpr(
+                new IntegerLiteralExpr("0"),
+                new NodeList<>(
+                        new SwitchEntry(
+                                new NodeList<>(),
+                                SwitchEntry.Type.BLOCK,
+                                new NodeList<>(new BlockStmt(new NodeList<>(new YieldStmt(expression)))),
+                                true,
+                                null
+                        )
+                )
+        );
+    }
+
     public static void insertBefore(Node n, Statement newStmt) {
         Node parent = n.getParentNode().orElse(null);
         if (parent instanceof BlockStmt block) {
@@ -128,6 +163,8 @@ public class JavaParserUtil {
         } else if (parent instanceof SwitchEntry entry) {
             int idx = entry.getStatements().indexOf(n);
             if (idx >= 0) entry.getStatements().add(idx, newStmt);
+        } else {
+            throw new IllegalArgumentException("Node is not inside a BlockStmt or SwitchEntry");
         }
     }
 
@@ -139,7 +176,28 @@ public class JavaParserUtil {
         } else if (parent instanceof SwitchEntry entry) {
             int idx = entry.getStatements().indexOf(n);
             if (idx >= 0) entry.getStatements().add(idx + 1, newStmt);
+        } else {
+            throw new IllegalArgumentException("Node is not inside a BlockStmt or SwitchEntry");
         }
+    }
+
+    public static boolean isSimpleExpression(Expression expression) {
+
+        if (expression instanceof EnclosedExpr enclosedExpr) {
+            return isSimpleExpression(enclosedExpr.getInner());
+        }
+
+        if (expression instanceof UnaryExpr u
+                && (u.getOperator() == UnaryExpr.Operator.MINUS
+                || u.getOperator() == UnaryExpr.Operator.PLUS)
+                && u.getExpression() instanceof LiteralExpr) {
+            return true;
+        }
+
+        return expression instanceof NameExpr
+                || expression instanceof ThisExpr
+                || expression instanceof SuperExpr
+                || expression instanceof LiteralExpr;
     }
 
     public static boolean isInsideLambda(Node n) {
@@ -191,5 +249,113 @@ public class JavaParserUtil {
     public static boolean isLongOrInt(Expression expr) {
         ResolvedType type = expr.calculateResolvedType();
         return type.equals(ResolvedPrimitiveType.INT) || type.equals(ResolvedPrimitiveType.LONG);
+    }
+
+    public static boolean isNarrowPrimitive(ResolvedType t) {
+        if (!t.isPrimitive()) return false;
+        return switch (t.asPrimitive()) {
+            case BYTE, SHORT, CHAR -> true;
+            default -> false;
+        };
+    }
+
+    public static boolean isNarrowPrimitive(Type t) {
+        if (!(t instanceof PrimitiveType pt)) return false;
+        return switch (pt.getType()) {
+            case BYTE, SHORT, CHAR -> true;
+            default -> false;
+        };
+    }
+
+    public static Node unwrapEnclosed(Node n) {
+        while (n instanceof EnclosedExpr e) n = e.getParentNode().orElse(null);
+        return n;
+    }
+
+    public static Type resolvedToAstType(ResolvedType t) {
+        if (t.isPrimitive()) {
+            return switch (t.asPrimitive()) {
+                case BYTE -> PrimitiveType.byteType();
+                case SHORT -> PrimitiveType.shortType();
+                case CHAR -> PrimitiveType.charType();
+                case INT -> PrimitiveType.intType();
+                case LONG -> PrimitiveType.longType();
+                case FLOAT -> PrimitiveType.floatType();
+                case DOUBLE -> PrimitiveType.doubleType();
+                case BOOLEAN -> PrimitiveType.booleanType();
+            };
+        }
+
+        if (t.isArray()) {
+            return new ArrayType(resolvedToAstType(t.asArrayType().getComponentType()));
+        }
+        if (t.isReferenceType()) {
+            return new ClassOrInterfaceType(null, t.asReferenceType().getQualifiedName());
+        }
+        throw new UnsupportedOperationException("Cannot convert type: " + t);
+    }
+
+    /**
+     * Best-effort check: does control flow always leave {@code s} via return/throw?
+     */
+    public static boolean alwaysExits(Statement s) {
+        if (s instanceof ReturnStmt) return true;
+        if (s instanceof ThrowStmt) return true;
+        if (s instanceof BlockStmt b) {
+            if (b.getStatements().isEmpty()) return false;
+            return alwaysExits(b.getStatement(b.getStatements().size() - 1));
+        }
+        if (s instanceof IfStmt i) {
+            return i.getElseStmt().isPresent()
+                    && alwaysExits(i.getThenStmt())
+                    && alwaysExits(i.getElseStmt().get());
+        }
+        if (s instanceof SwitchStmt sw) {
+            NodeList<SwitchEntry> entries = sw.getEntries();
+            boolean hasDefault = entries.stream().anyMatch(e -> e.getLabels().isEmpty());
+            if (!hasDefault) return false;
+
+            boolean currentGroupExits = false;
+            for (int i = entries.size() - 1; i >= 0; i--) {
+                NodeList<Statement> stmts = entries.get(i).getStatements();
+                if (!stmts.isEmpty()) {
+                    currentGroupExits = alwaysExits(stmts.getLast().get());
+                }
+                if (!currentGroupExits) return false;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    public static boolean alwaysExitsLoop(Statement s) {
+        if (s instanceof ReturnStmt) return true;
+        if (s instanceof ThrowStmt) return true;
+        if (s instanceof BreakStmt) return true;
+        if (s instanceof BlockStmt b) {
+            if (b.getStatements().isEmpty()) return false;
+            return alwaysExitsLoop(b.getStatement(b.getStatements().size() - 1));
+        }
+        if (s instanceof IfStmt i) {
+            return i.getElseStmt().isPresent()
+                    && alwaysExitsLoop(i.getThenStmt())
+                    && alwaysExitsLoop(i.getElseStmt().get());
+        }
+        if (s instanceof SwitchStmt sw) {
+            NodeList<SwitchEntry> entries = sw.getEntries();
+            boolean hasDefault = entries.stream().anyMatch(e -> e.getLabels().isEmpty());
+            if (!hasDefault) return false;
+
+            boolean currentGroupExits = false;
+            for (int i = entries.size() - 1; i >= 0; i--) {
+                NodeList<Statement> stmts = entries.get(i).getStatements();
+                if (!stmts.isEmpty()) {
+                    currentGroupExits = alwaysExitsLoop(stmts.getLast().get());
+                }
+                if (!currentGroupExits) return false;
+            }
+            return true;
+        }
+        return false;
     }
 }
