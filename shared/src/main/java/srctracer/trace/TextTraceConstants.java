@@ -2,6 +2,9 @@ package srctracer.trace;
 
 public class TextTraceConstants {
 
+    private TextTraceConstants() {
+    }
+
     public static final char TEXT_IF = 'I';
     public static final char TEXT_ELSE = 'O';
     public static final char TEXT_CALL = 'C';

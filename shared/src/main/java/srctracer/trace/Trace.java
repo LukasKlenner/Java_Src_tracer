@@ -61,13 +61,11 @@ public class Trace {
     }
 
     private static int readHexNumber(StringReader reader) {
-
         StringBuilder sb = new StringBuilder();
-        while (reader.hasNext() && isHexDigit(reader.string.charAt(reader.index))) {
+        while (reader.hasNext() && isHexDigit(reader.peek())) {
             sb.append(reader.read());
         }
         return Integer.parseInt(sb.toString(), 16);
-
     }
 
     private static boolean isHexDigit(char c) {
@@ -77,11 +75,14 @@ public class Trace {
     private static class StringReader {
 
         private final String string;
-
         private int index = 0;
 
         private StringReader(String string) {
             this.string = string;
+        }
+
+        public char peek() {
+            return string.charAt(index);
         }
 
         public char read() {

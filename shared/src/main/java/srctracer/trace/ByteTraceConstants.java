@@ -1,6 +1,10 @@
 package srctracer.trace;
 
 public class ByteTraceConstants {
+
+    private ByteTraceConstants() {
+    }
+
     // Byte-level constants from trace_elem.h
     public static final int FUNC_4    = 0x00;
     public static final int FUNC_12   = 0x10;

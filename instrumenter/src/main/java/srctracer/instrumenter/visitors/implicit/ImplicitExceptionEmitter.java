@@ -17,7 +17,7 @@ import com.github.javaparser.ast.expr.NameExpr;
 import com.github.javaparser.ast.expr.InstanceOfExpr;
 import com.github.javaparser.ast.expr.ObjectCreationExpr;
 import com.github.javaparser.ast.expr.SuperExpr;
-import com.github.javaparser.ast.expr.SwitchExpr;
+import srctracer.instrumenter.visitors.AbstractInstrumenterVisitor;
 import com.github.javaparser.ast.expr.ThisExpr;
 import com.github.javaparser.ast.expr.UnaryExpr;
 import com.github.javaparser.ast.expr.VariableDeclarationExpr;
@@ -378,12 +378,9 @@ public final class ImplicitExceptionEmitter {
         rewritten.setExpression(val);
         if (cast.getType().isPrimitiveType()) {
             // Unboxing: null reference → NullPointerException (§5.1.8).
-            // SwitchExpr inside the cast expression means InstrumenterVisitor injected
-            // this cast for ternary-branch narrowing — the value is always primitive,
-            // so no unboxing is possible. Only check when the expression is unmodified.
-            boolean hasInjectedSwitch = !cast.getExpression()
-                    .findAll(SwitchExpr.class).isEmpty();
-            if (!hasInjectedSwitch
+            // Skip when InstrumenterVisitor injected this cast for ternary-branch
+            // narrowing — the operand is always primitive, so unboxing cannot occur.
+            if (!cast.containsData(AbstractInstrumenterVisitor.TERNARY_REWRITE_CAST)
                     && cast.getExpression().calculateResolvedType().isReferenceType()) {
                 out.add(nullCheck(val));
             }

@@ -6,7 +6,6 @@ import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.body.Parameter;
 import com.github.javaparser.ast.body.TypeDeclaration;
 import com.github.javaparser.ast.body.VariableDeclarator;
-import com.github.javaparser.ast.expr.ArrayAccessExpr;
 import com.github.javaparser.ast.expr.AssignExpr;
 import com.github.javaparser.ast.expr.CastExpr;
 import com.github.javaparser.ast.expr.ConditionalExpr;
@@ -26,7 +25,6 @@ import com.github.javaparser.ast.stmt.SwitchStmt;
 import com.github.javaparser.ast.stmt.TryStmt;
 import com.github.javaparser.ast.stmt.WhileStmt;
 import com.github.javaparser.ast.type.Type;
-import com.github.javaparser.ast.visitor.ModifierVisitor;
 import com.github.javaparser.ast.visitor.Visitable;
 import com.github.javaparser.resolution.types.ResolvedPrimitiveType;
 import com.github.javaparser.resolution.types.ResolvedType;
@@ -46,22 +44,21 @@ import static srctracer.util.JavaParserUtil.insertAfter;
 import static srctracer.util.JavaParserUtil.insertBefore;
 import static srctracer.util.JavaParserUtil.isBreakForSwitch;
 import static srctracer.util.JavaParserUtil.isInsideLambda;
-import static srctracer.util.JavaParserUtil.isMainMethod;
 import static srctracer.util.JavaParserUtil.isNarrowPrimitive;
 import static srctracer.util.JavaParserUtil.parseStatement;
 import static srctracer.util.JavaParserUtil.parseTracerCall;
+import static srctracer.util.JavaParserUtil.parseTracerFieldAdd;
 import static srctracer.util.JavaParserUtil.resolvedToAstType;
 import static srctracer.util.JavaParserUtil.unwrapEnclosed;
 import static srctracer.util.JavaParserUtil.wrapInSwitchExpression;
 
-public class InstrumenterVisitor extends ModifierVisitor<Void> {
+public class InstrumenterVisitor extends AbstractInstrumenterVisitor {
 
     private final FunctionDatabaseWriter functionDatabaseWriter;
-    private final String lifecycleMethodName;
 
-    int nextFuncId = 1;
-    int nextSwitchId = 0;
-    int nextTmpId = 0;
+    private int nextFuncId = 1;
+    private int nextSwitchId = 0;
+    private int nextTmpId = 0;
 
     private final InstrumenterStats stats = new InstrumenterStats();
 
@@ -70,26 +67,18 @@ public class InstrumenterVisitor extends ModifierVisitor<Void> {
     }
 
     public InstrumenterVisitor(FunctionDatabaseWriter functionDatabaseWriter, String lifecycleMethodName) {
+        super(lifecycleMethodName);
         this.functionDatabaseWriter = functionDatabaseWriter;
-        this.lifecycleMethodName = lifecycleMethodName;
     }
 
-    // ---- Method / constructor entry ----
+    // ---- Method entry ----
 
     @Override
-    public Visitable visit(MethodDeclaration md, Void a) {
-        boolean isLifecycleMethod = isLifecycleMethod(md);
-        boolean isMainMethod = isMainMethod(md);
-
-        if (isMainMethod && !isLifecycleMethod) {
-            // Do not instrument the main method if it's a lifecycle method
-            return md;
-        }
-        super.visit(md, a);
-
-        if (md.getBody().isEmpty()) return md;
+    protected void postVisitMethod(MethodDeclaration md) {
+        if (md.getBody().isEmpty()) return;
         BlockStmt body = md.getBody().get();
 
+        // Private and static methods are omitted from tracing.
         if (!md.isPrivate() && !md.isStatic()) {
             FunctionSignature signature = new FunctionSignature(
                     (TypeDeclaration<?>) md.getParentNode().get(),
@@ -97,31 +86,27 @@ public class InstrumenterVisitor extends ModifierVisitor<Void> {
                     md.getParameters(),
                     md.getType()
             );
-
-            insertFuncCall(
-                    body,
-                    signature,
-                    0
-            );
+            int id = createNewFunctionId(signature);
+            body.addStatement(0, parseTracerCall(TracerMethod.FUNCTION_CALL, id));
+            stats.incrementMethodCount();
         }
 
-        // record implicit return in void methods
+        // Record implicit return in void methods.
         if (!alwaysExits(body)) {
             body.addStatement(parseTracerCall(TracerMethod.RETURN));
         }
 
-        if (isLifecycleMethod) {
+        if (isLifecycleMethod(md)) {
             wrapMainWithLifecycle(md);
             stats.incrementMainCount();
         }
-
-        return md;
     }
 
     /**
-     * Replaces main's body with:
+     * Replaces the lifecycle method body with:
      * trace_start("<ClassName>");
-     * try { _FUNC(id); <original statements...> }
+     * try { _TRY(); _FUNC(id); <original statements...> }
+     * catch (Throwable e) { _CATCH(...); throw e; }
      * finally { trace_end(); }
      */
     private void wrapMainWithLifecycle(MethodDeclaration md) {
@@ -129,7 +114,7 @@ public class InstrumenterVisitor extends ModifierVisitor<Void> {
         String name = enclosingTypeName(md);
 
         BlockStmt tryBlock = new BlockStmt();
-        // TODO this (and the catch) is only needed for key retracing and do not atually exists in the original method
+        // The _TRY marker here is needed for KeY retrace only — the original source has no outer try.
         tryBlock.addStatement(parseTracerCall(TracerMethod.TRY));
         for (Statement s : original.getStatements()) {
             tryBlock.addStatement(s.clone());
@@ -157,57 +142,14 @@ public class InstrumenterVisitor extends ModifierVisitor<Void> {
         md.setBody(newBody);
     }
 
-    private boolean isLifecycleMethod(MethodDeclaration md) {
-        if (lifecycleMethodName != null) {
-            return md.getNameAsString().equals(lifecycleMethodName);
-        }
-        return isMainMethod(md);
-    }
-
     private static String enclosingTypeName(MethodDeclaration md) {
         Node cur = md.getParentNode().orElse(null);
         while (cur != null) {
             if (cur instanceof TypeDeclaration<?> td) return td.getNameAsString();
             cur = cur.getParentNode().orElse(null);
         }
-        return "instrumented";
+        throw new IllegalStateException("MethodDeclaration has no enclosing TypeDeclaration: " + md.getNameAsString());
     }
-
-//    @Override
-//    public Visitable visit(ConstructorDeclaration cd, Void a) {
-//        super.visit(cd, a);
-//
-//        // TODO eigentlich nicht tracen, oder?
-//        BlockStmt body = cd.getBody();
-//        FunctionSignature signature = new FunctionSignature(
-//                (TypeDeclaration<?>) cd.getParentNode().get(),
-//                cd.getNameAsString(),
-//                cd.getParameters(),
-//                new VoidType()
-//        );
-//        int idx = !body.getStatements().isEmpty()
-//                && body.getStatement(0) instanceof ExplicitConstructorInvocationStmt
-//                ? 1 : 0;
-//
-//        insertFuncCall(
-//                body,
-//                signature,
-//                idx
-//        );
-//        return cd;
-//    }
-
-    // ---- Initializer blocks ----
-
-//        @Override
-//        public Visitable visit(InitializerDeclaration n, Void a) {
-//            super.visit(n, a);
-//            int id = nextFuncId++;
-//            initializers++;
-//            n.getBody().addStatement(0, parseStatement(
-//                    "srctracer.Trace._FUNC(" + id + ");"));
-//            return n;
-//        }
 
     // ---- If / else ----
 
@@ -252,7 +194,11 @@ public class InstrumenterVisitor extends ModifierVisitor<Void> {
         elseExpr.accept(this, a);
 
         stats.incrementTernaryCount();
-        return castType.<Visitable>map(t -> new CastExpr(t, n)).orElse(n);
+        return castType.<Visitable>map(t -> {
+            CastExpr cast = new CastExpr(t, n);
+            cast.setData(TERNARY_REWRITE_CAST, Boolean.TRUE);
+            return cast;
+        }).orElse(n);
     }
 
     private Optional<Type> computePreservationCast(ConditionalExpr n) {
@@ -281,13 +227,12 @@ public class InstrumenterVisitor extends ModifierVisitor<Void> {
             return Optional.of(vd.getType());
         if (parent instanceof AssignExpr ae) {
             try { return Optional.of(resolvedToAstType(ae.getTarget().calculateResolvedType())); }
-            catch (Exception ignored) {}
+            catch (RuntimeException ignored) {}
         }
         if (parent instanceof ReturnStmt)
             return n.findAncestor(MethodDeclaration.class).map(MethodDeclaration::getType);
         return Optional.empty();
     }
-
 
     // ---- Return ----
 
@@ -407,26 +352,18 @@ public class InstrumenterVisitor extends ModifierVisitor<Void> {
         // Append _TRY_END only if the body can fall through; otherwise Java
         // would reject the trailing call as unreachable code.
         if (!alwaysExits(tryBlock)) {
-            tryBlock.addStatement(
-                    parseTracerCall(TracerMethod.TRY_END)
-            );
+            tryBlock.addStatement(parseTracerCall(TracerMethod.TRY_END));
         }
 
         // instrument catch blocks
         for (int i = 0; i < catches.size(); i++) {
             BlockStmt catchBody = catches.get(i).getBody();
-
-            catchBody.addStatement(
-                    0,
+            catchBody.addStatement(0,
                     parseTracerCall(TracerMethod.CATCH, TracerField.TOTAL_CATCH_COUNT.getFieldAccessString() + " + " + i));
-            catchBody.addStatement(
-                    1,
-                    parseStatement(TracerField.TOTAL_CATCH_COUNT.getFieldAccessString() + " += " + catchCount + ";")
-            );
-            catchBody.addStatement(
-                    2,
-                    parseStatement(catchedExceptionVar + " = true;")
-            );
+            catchBody.addStatement(1,
+                    parseTracerFieldAdd(TracerField.TOTAL_CATCH_COUNT, catchCount));
+            catchBody.addStatement(2,
+                    parseStatement(catchedExceptionVar + " = true;"));
         }
 
         // instrument finally block
@@ -437,26 +374,12 @@ public class InstrumenterVisitor extends ModifierVisitor<Void> {
                     return block;
                 });
 
-        // only increment catch count if the exception was not catched by any of the catch blocks
-        finallyBlock.addStatement(
-                0,
-                parseStatement(
-                        "if (!" + catchedExceptionVar + ") {" +
-                                TracerField.TOTAL_CATCH_COUNT.getFieldAccessString() + " += " + catchCount + ";" +
-                                "}"
-                )
-        );
+        // only increment catch count if the exception was not caught by any catch block
+        String catchCountField = TracerField.TOTAL_CATCH_COUNT.getFieldAccessString();
+        finallyBlock.addStatement(0,
+                parseStatement("if (!" + catchedExceptionVar + ") { " + catchCountField + " += " + catchCount + "; }"));
 
         stats.incrementTryCount();
-        return n;
-    }
-
-    // ---- Implicit Exceptions ----
-
-    @Override
-    public Visitable visit(ArrayAccessExpr n, Void a) {
-        super.visit(n, a);
-
         return n;
     }
 
@@ -466,20 +389,9 @@ public class InstrumenterVisitor extends ModifierVisitor<Void> {
 
     // ---- Helpers ----
 
-    private void insertFuncCall(
-            BlockStmt body,
-            FunctionSignature signature,
-            int index
-    ) {
-        int id = createNewFunctionId(signature);
-        body.addStatement(index, parseTracerCall(TracerMethod.FUNCTION_CALL, id));
-        stats.incrementMethodCount();
-    }
-
     private int createNewFunctionId(FunctionSignature signature) {
         int id = nextFuncId++;
         functionDatabaseWriter.storeFunctionId(id, signature);
         return id;
     }
-
 }

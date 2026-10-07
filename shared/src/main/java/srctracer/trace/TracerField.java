@@ -17,10 +17,6 @@ public enum TracerField {
         return "srctracer.Trace." + fieldName;
     }
 
-    public String getFieldWriteString(String value) {
-        return "srctracer.Trace." + fieldName + " = " + value + ";";
-    }
-
     public String getFieldTypeString() {
         return fieldType.getName();
     }

@@ -24,21 +24,19 @@ import com.github.javaparser.ast.stmt.ForStmt;
 import com.github.javaparser.ast.stmt.IfStmt;
 import com.github.javaparser.ast.stmt.ReturnStmt;
 import com.github.javaparser.ast.stmt.Statement;
-import com.github.javaparser.ast.stmt.SwitchEntry;
 import com.github.javaparser.ast.stmt.SwitchStmt;
 import com.github.javaparser.ast.stmt.ThrowStmt;
 import com.github.javaparser.ast.stmt.WhileStmt;
 import com.github.javaparser.ast.stmt.YieldStmt;
-import com.github.javaparser.ast.expr.SwitchExpr;
 import com.github.javaparser.ast.type.ClassOrInterfaceType;
-import com.github.javaparser.ast.visitor.ModifierVisitor;
 import com.github.javaparser.ast.visitor.Visitable;
+import srctracer.instrumenter.visitors.AbstractInstrumenterVisitor;
 import srctracer.instrumenter.visitors.InstrumenterVisitor;
 
 import static srctracer.instrumenter.Instrumenter.MAIN_LIFECYCLE_CATCH_PARAM;
 import static srctracer.util.JavaParserUtil.alwaysExitsLoop;
-import static srctracer.util.JavaParserUtil.isMainMethod;
 import static srctracer.util.JavaParserUtil.resolvedToAstType;
+import static srctracer.util.JavaParserUtil.wrapInSwitchExpression;
 
 /**
  * Further instruments the given {@link CompilationUnit} to trace implicit
@@ -52,27 +50,13 @@ import static srctracer.util.JavaParserUtil.resolvedToAstType;
  * variables and inserting check if-statements before the statement. Evaluation
  * order strictly follows the JLS.
  */
-public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
+public class ImplicitExceptionVisitor extends AbstractInstrumenterVisitor {
 
     private final ImplicitExceptionEmitter emitter;
-    private final String lifecycleMethodName;
 
     public ImplicitExceptionVisitor(String lifecycleMethodName) {
-        this.lifecycleMethodName = lifecycleMethodName;
+        super(lifecycleMethodName);
         this.emitter = new ImplicitExceptionEmitter(0);
-    }
-
-    @Override
-    public Visitable visit(MethodDeclaration md, Void a) {
-        boolean isLifecycleMethod = isLifecycleMethod(md);
-        boolean isMainMethod = isMainMethod(md);
-
-        if (isMainMethod && !isLifecycleMethod) {
-            // Do not instrument the main method if it is a lifecycle method
-            return md;
-        }
-
-        return super.visit(md, a);
     }
 
     @Override
@@ -159,18 +143,7 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
             NodeList<Statement> checks = new NodeList<>();
             Expression newArg = emitter.emit(n.getArgument(i), checks);
             if (!checks.isEmpty()) {
-                NodeList<Statement> switchBody = new NodeList<>(checks);
-                switchBody.add(new YieldStmt(newArg));
-                n.setArgument(i, new SwitchExpr(
-                        new IntegerLiteralExpr("0"),
-                        new NodeList<>(new SwitchEntry(
-                                new NodeList<>(),
-                                SwitchEntry.Type.BLOCK,
-                                new NodeList<>(new BlockStmt(switchBody)),
-                                true,
-                                null
-                        ))
-                ));
+                n.setArgument(i, wrapInSwitchExpression(checks, newArg));
             } else {
                 n.setArgument(i, newArg);
             }
@@ -382,10 +355,4 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
         }
     }
 
-    private boolean isLifecycleMethod(MethodDeclaration md) {
-        if (lifecycleMethodName != null) {
-            return md.getNameAsString().equals(lifecycleMethodName);
-        }
-        return isMainMethod(md);
-    }
 }

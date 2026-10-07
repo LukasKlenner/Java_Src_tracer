@@ -72,8 +72,10 @@ public class JavaParserUtil {
     }
 
     public static String getQualifiedClassName(MethodDeclaration method) {
-        TypeDeclaration<?> ancestor = (TypeDeclaration<?>) method.findAncestor(TypeDeclaration.class).orElseThrow(() -> new RuntimeException("Cannot determine class name"));
-        return ancestor.getFullyQualifiedName().get();
+        TypeDeclaration<?> ancestor = (TypeDeclaration<?>) method.findAncestor(TypeDeclaration.class)
+                .orElseThrow(() -> new RuntimeException("Cannot determine class name"));
+        return ancestor.getFullyQualifiedName()
+                .orElseThrow(() -> new RuntimeException("Cannot determine qualified name for: " + ancestor.getNameAsString()));
     }
 
     public static String getParamDescriptor(MethodDeclaration method) {
@@ -124,16 +126,12 @@ public class JavaParserUtil {
         return parseStatement(method.getMethodCallString(args) + ";");
     }
 
-    public static MethodCallExpr parseTracerCallExpr(TracerMethod method, Expression... args) {
-        return new MethodCallExpr(method.getMethodName(), args);
+    public static Statement parseTracerFieldStore(TracerField field, Object value) {
+        return parseStatement(field.getFieldAccessString() + " = " + value + ";");
     }
 
-    public static Statement parseTracerFieldLoad(String varName, TracerField field) {
-        return parseStatement(field.getFieldTypeString() + " " + varName + " = " + field.getFieldAccessString() + ";");
-    }
-
-    public static Statement parseTracerFieldStore(TracerField field, String expr) {
-        return parseStatement(field.getFieldAccessString() + " = " + expr + ";");
+    public static Statement parseTracerFieldAdd(TracerField field, Object amount) {
+        return parseStatement(field.getFieldAccessString() + " += " + amount + ";");
     }
 
     public static Statement parseStatement(String code) {
@@ -141,13 +139,19 @@ public class JavaParserUtil {
     }
 
     public static Expression wrapInSwitchExpression(Expression expression) {
+        return wrapInSwitchExpression(new NodeList<>(), expression);
+    }
+
+    public static Expression wrapInSwitchExpression(NodeList<Statement> stmts, Expression yieldExpr) {
+        NodeList<Statement> body = new NodeList<>(stmts);
+        body.add(new YieldStmt(yieldExpr));
         return new SwitchExpr(
                 new IntegerLiteralExpr("0"),
                 new NodeList<>(
                         new SwitchEntry(
                                 new NodeList<>(),
                                 SwitchEntry.Type.BLOCK,
-                                new NodeList<>(new BlockStmt(new NodeList<>(new YieldStmt(expression)))),
+                                new NodeList<>(new BlockStmt(body)),
                                 true,
                                 null
                         )
@@ -235,22 +239,6 @@ public class JavaParserUtil {
         return Optional.empty();
     }
 
-    private static Optional<Statement> getLastReturnStatement(Statement stmt) {
-        if (stmt instanceof BlockStmt block) {
-            if (block.getStatements().isEmpty()) {
-                throw new IllegalArgumentException("Block statement is empty, cannot get last non-block statement.");
-            }
-            return getLastReturnStatement(block.getStatements().getLast().get());
-        }
-
-        return Optional.of(stmt);
-    }
-
-    public static boolean isLongOrInt(Expression expr) {
-        ResolvedType type = expr.calculateResolvedType();
-        return type.equals(ResolvedPrimitiveType.INT) || type.equals(ResolvedPrimitiveType.LONG);
-    }
-
     public static boolean isNarrowPrimitive(ResolvedType t) {
         if (!t.isPrimitive()) return false;
         return switch (t.asPrimitive()) {
@@ -295,62 +283,38 @@ public class JavaParserUtil {
         throw new UnsupportedOperationException("Cannot convert type: " + t);
     }
 
-    /**
-     * Best-effort check: does control flow always leave {@code s} via return/throw?
-     */
+    /** Best-effort check: does control flow always leave {@code s} via return/throw? */
     public static boolean alwaysExits(Statement s) {
-        if (s instanceof ReturnStmt) return true;
-        if (s instanceof ThrowStmt) return true;
-        if (s instanceof BlockStmt b) {
-            if (b.getStatements().isEmpty()) return false;
-            return alwaysExits(b.getStatement(b.getStatements().size() - 1));
-        }
-        if (s instanceof IfStmt i) {
-            return i.getElseStmt().isPresent()
-                    && alwaysExits(i.getThenStmt())
-                    && alwaysExits(i.getElseStmt().get());
-        }
-        if (s instanceof SwitchStmt sw) {
-            NodeList<SwitchEntry> entries = sw.getEntries();
-            boolean hasDefault = entries.stream().anyMatch(e -> e.getLabels().isEmpty());
-            if (!hasDefault) return false;
-
-            boolean currentGroupExits = false;
-            for (int i = entries.size() - 1; i >= 0; i--) {
-                NodeList<Statement> stmts = entries.get(i).getStatements();
-                if (!stmts.isEmpty()) {
-                    currentGroupExits = alwaysExits(stmts.getLast().get());
-                }
-                if (!currentGroupExits) return false;
-            }
-            return true;
-        }
-        return false;
+        return alwaysExitsImpl(s, false);
     }
 
+    /** Like {@link #alwaysExits} but also treats {@link BreakStmt} as an exit (loop context). */
     public static boolean alwaysExitsLoop(Statement s) {
+        return alwaysExitsImpl(s, true);
+    }
+
+    private static boolean alwaysExitsImpl(Statement s, boolean breakExits) {
         if (s instanceof ReturnStmt) return true;
         if (s instanceof ThrowStmt) return true;
-        if (s instanceof BreakStmt) return true;
+        if (breakExits && s instanceof BreakStmt) return true;
         if (s instanceof BlockStmt b) {
             if (b.getStatements().isEmpty()) return false;
-            return alwaysExitsLoop(b.getStatement(b.getStatements().size() - 1));
+            return alwaysExitsImpl(b.getStatement(b.getStatements().size() - 1), breakExits);
         }
         if (s instanceof IfStmt i) {
             return i.getElseStmt().isPresent()
-                    && alwaysExitsLoop(i.getThenStmt())
-                    && alwaysExitsLoop(i.getElseStmt().get());
+                    && alwaysExitsImpl(i.getThenStmt(), breakExits)
+                    && alwaysExitsImpl(i.getElseStmt().get(), breakExits);
         }
         if (s instanceof SwitchStmt sw) {
             NodeList<SwitchEntry> entries = sw.getEntries();
-            boolean hasDefault = entries.stream().anyMatch(e -> e.getLabels().isEmpty());
-            if (!hasDefault) return false;
+            if (entries.stream().noneMatch(e -> e.getLabels().isEmpty())) return false; // no default
 
             boolean currentGroupExits = false;
             for (int i = entries.size() - 1; i >= 0; i--) {
                 NodeList<Statement> stmts = entries.get(i).getStatements();
                 if (!stmts.isEmpty()) {
-                    currentGroupExits = alwaysExitsLoop(stmts.getLast().get());
+                    currentGroupExits = alwaysExitsImpl(stmts.getLast().get(), breakExits);
                 }
                 if (!currentGroupExits) return false;
             }
