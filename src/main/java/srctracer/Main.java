@@ -31,13 +31,13 @@ public class Main {
 
     private static final String USAGE = """
             Usage: java-src-tracer <command> <input.java> [options] [-- program-args...]
-            
+
             Commands:
               instrument  Produce instrumented Java source
               trace       Instrument, compile, run, and produce a trace file
               annotate    Produce trace and pass to key-annotater for .key file
               fuzz        Fuzz, trace interesting inputs, and produce .key files
-            
+
             Options:
               -o <file>      Output file (instrument only; default: <name>.instrumented.java)
               --binary       Use binary trace format (trace/annotate/fuzz; default: text)
@@ -65,7 +65,7 @@ public class Main {
     public static final boolean DEFAULT_BINARY_TRACE = false;
 
     public static final int DEFAULT_FUZZ_DURATION = 15;
-    public static final int DEFAULT_FUZZ_BATCH_SIZE = 1;
+    public static final int DEFAULT_FUZZ_BATCH_SIZE = 0; // 0 = all proofs in one batch
     public static final String DEFAULT_FUZZ_START_METHOD = "fuzzerTestOneInput";
     public static final String DEFAULT_KEY_MEMORY = "8g";
 
@@ -79,7 +79,7 @@ public class Main {
         String[] rest = Arrays.copyOfRange(args, 1, args.length);
 
         TraceArgs parsedArgs = parseTraceArgs(rest, command);
-        Files.createDirectories(parsedArgs.output);
+        Files.createDirectories(parsedArgs.output());
 
         switch (command) {
             case INSTRUMENT -> instrument(parsedArgs);
@@ -97,106 +97,66 @@ public class Main {
 
     private static void instrument(TraceArgs args) throws Exception {
         Path runtimeJar = resolveRuntimeJar(false);
-
-        try (FunctionDatabaseWriter dbWriter = new CsvFunctionDatabaseWriter(args.output.resolve(DEFAULT_FUNCTION_DB_NAME))) {
-            Instrumenter instrumenter = new Instrumenter(dbWriter, List.of(args.input.getParent()), List.of(runtimeJar), args.startMethodName);
-
-            instrumenter.transform(args.input, args.output.resolve(args.input.getFileName().toString().replace(".java", ".instrumented.java")));
+        try (FunctionDatabaseWriter dbWriter = new CsvFunctionDatabaseWriter(
+                args.output().resolve(DEFAULT_FUNCTION_DB_NAME))) {
+            new Instrumenter(dbWriter, List.of(args.input().getParent()), List.of(runtimeJar), args.startMethodName())
+                    .transform(args.input(), args.output().resolve(
+                            args.input().getFileName().toString().replace(".java", ".instrumented.java")));
         }
-
-        System.out.println("Wrote instrumented source: " + args.output);
+        System.out.println("Wrote instrumented source: " + args.output());
     }
 
     // ---- trace: instrument + compile + run → trace file ----
 
     private static void trace(TraceArgs args) throws Exception {
+        Path runtimeJar = resolveRuntimeJar(args.binary());
+        String instrumentedSource = instrumentToString(args, runtimeJar);
 
-        Path runtimeJar = resolveRuntimeJar(args.binary);
-
-        String instrumentedSource;
-        try (FunctionDatabaseWriter dbWriter = new CsvFunctionDatabaseWriter(args.output().resolve(DEFAULT_FUNCTION_DB_NAME))) {
-            Instrumenter instrumenter = new Instrumenter(dbWriter, List.of(args.input.getParent()), List.of(runtimeJar), args.startMethodName);
-
-            instrumentedSource = instrumenter.transformToString(args.input);
-        }
-
-        String className = classNameFrom(args.input);
+        String className = classNameFrom(args.input());
         Path tempDir = Files.createTempDirectory("srctracer-");
-
         compile(instrumentedSource, className, tempDir, runtimeJar);
 
-        try (URLClassLoader cl = createClassLoader(tempDir, runtimeJar)) {
-            Path traceFile = args.output.resolve(className + ".trace" + (args.binary ? "" : ".txt"));
-            OutputStreamWriter out = new OutputStreamWriter(
-                    new FileOutputStream(traceFile.toFile()),
-                    StandardCharsets.UTF_8);
-
+        Path traceFile = args.output().resolve(className + ".trace" + (args.binary() ? "" : ".txt"));
+        try (URLClassLoader cl = createClassLoader(tempDir, runtimeJar);
+             var out = new OutputStreamWriter(new FileOutputStream(traceFile.toFile()), StandardCharsets.UTF_8)) {
             Class<?> traceClass = cl.loadClass("srctracer.Trace");
             traceClass.getMethod("trace_start", Writer.class).invoke(null, out);
-
-            Class<?> userClass = cl.loadClass(className);
-            Method userMain = userClass.getMethod("main", String[].class);
-            userMain.setAccessible(true);
-            userMain.invoke(null, (Object) args.programArgs);
+            runUserCode(cl, className, args.programArgs());
         } finally {
             deleteRecursive(tempDir);
         }
     }
 
-// ---- annotate: instrument + compile + run (in-memory trace) → key-annotater ----
+    // ---- annotate: instrument + compile + run (in-memory trace) → key-annotater ----
 
     private static void annotate(TraceArgs args) throws Exception {
+        Path runtimeJar = resolveRuntimeJar(args.binary());
+        Path functionDatabaseFile = args.output().resolve(DEFAULT_FUNCTION_DB_NAME);
+        String instrumentedSource = instrumentToString(args, runtimeJar);
 
-        Path runtimeJar = resolveRuntimeJar(args.binary);
-
-        String instrumentedSource;
-        Path functionDatabaseFile = args.output.resolve(DEFAULT_FUNCTION_DB_NAME);
-        try (FunctionDatabaseWriter dbWriter = new CsvFunctionDatabaseWriter(functionDatabaseFile)) {
-            Instrumenter instrumenter = new Instrumenter(dbWriter, List.of(args.input.getParent()), List.of(runtimeJar), args.startMethodName);
-
-            instrumentedSource = instrumenter.transformToString(args.input);
-        }
-
-        String className = classNameFrom(args.input);
+        String className = classNameFrom(args.input());
         Path tempDir = Files.createTempDirectory("srctracer-");
-
         compile(instrumentedSource, className, tempDir, runtimeJar);
 
+        Path traceFile = args.output().resolve(className + ".trace" + (args.binary() ? "" : ".txt"));
         try (URLClassLoader cl = createClassLoader(tempDir, runtimeJar)) {
             Class<?> traceClass = cl.loadClass("srctracer.Trace");
 
-            Object memoryTarget;
-            if (args.binary) {
+            if (args.binary()) {
                 ByteArrayOutputStream baos = new ByteArrayOutputStream();
                 traceClass.getMethod("trace_start", OutputStream.class).invoke(null, baos);
-                memoryTarget = baos;
+                runUserCode(cl, className, args.programArgs());
+                traceClass.getMethod("trace_end").invoke(null);
+                Files.write(traceFile, baos.toByteArray());
             } else {
                 StringWriter sw = new StringWriter();
                 traceClass.getMethod("trace_start", Writer.class).invoke(null, sw);
-                memoryTarget = sw;
-            }
-
-            Class<?> userClass = cl.loadClass(className);
-            Method userMain = userClass.getMethod("main", String[].class);
-            userMain.setAccessible(true);
-            try {
-                userMain.invoke(null, (Object) args.programArgs);
-            } catch (InvocationTargetException ignored) {
-            }
-
-            traceClass.getMethod("trace_end").invoke(null);
-
-            Path traceFile = args.output.resolve(className + ".trace" + (args.binary ? "" : ".txt"));
-            if (memoryTarget instanceof StringWriter sw) {
-                Files.createDirectories(traceFile.getParent());
+                runUserCode(cl, className, args.programArgs());
+                traceClass.getMethod("trace_end").invoke(null);
                 Files.writeString(traceFile, sw.toString());
-            } else {
-                ByteArrayOutputStream baos = (ByteArrayOutputStream) memoryTarget;
-                Files.createDirectories(traceFile.getParent());
-                Files.write(traceFile, baos.toByteArray());
             }
 
-            KeyAnnotater.annotate(args.input, args.output, traceFile, functionDatabaseFile, args.startMethodName);
+            KeyAnnotater.annotate(args.input(), args.output(), traceFile, functionDatabaseFile, args.startMethodName());
             System.out.println("Annotation complete.");
         } finally {
             deleteRecursive(tempDir);
@@ -209,7 +169,7 @@ public class Main {
         FuzzCommand.run(args);
     }
 
-// ---- shared arg parsing for trace/annotate ----
+    // ---- shared arg parsing ----
 
     record TraceArgs(
             Path input,
@@ -301,23 +261,40 @@ public class Main {
         }
 
         if (output == null) {
-
             DateTimeFormatter fmt = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH.mm.ss");
             String timestamp = fmt.format(LocalDateTime.now());
-
             String fileName = input.getFileName().toString().replace(".java", "");
-            switch (command) {
-                case INSTRUMENT -> output = Path.of(DEFAULT_INSTRUMENT_OUTPUT_DIR, fileName + "_" + timestamp);
-                case TRACE -> output = Path.of(DEFAULT_TRACE_OUTPUT_DIR, fileName + "_" + timestamp);
-                case ANNOTATE -> output = Path.of(DEFAULT_KEY_OUTPUT_DIR, fileName + "_" + timestamp);
-                case FUZZ -> output = Path.of(DEFAULT_FUZZ_OUTPUT_DIR, fileName + "_" + timestamp);
-            }
+            output = switch (command) {
+                case INSTRUMENT -> Path.of(DEFAULT_INSTRUMENT_OUTPUT_DIR, fileName + "_" + timestamp);
+                case TRACE      -> Path.of(DEFAULT_TRACE_OUTPUT_DIR,      fileName + "_" + timestamp);
+                case ANNOTATE   -> Path.of(DEFAULT_KEY_OUTPUT_DIR,        fileName + "_" + timestamp);
+                case FUZZ       -> Path.of(DEFAULT_FUZZ_OUTPUT_DIR,       fileName + "_" + timestamp);
+                default -> throw new IllegalStateException("Unhandled command: " + command);
+            };
         }
 
         return new TraceArgs(input, output, binary, fuzzDuration, batchSize, startMethodName, programArgs, inputSizesFile, keyMemory);
     }
 
-// ---- shared helpers ----
+    // ---- shared helpers ----
+
+    private static String instrumentToString(TraceArgs args, Path runtimeJar) throws Exception {
+        try (FunctionDatabaseWriter dbWriter = new CsvFunctionDatabaseWriter(
+                args.output().resolve(DEFAULT_FUNCTION_DB_NAME))) {
+            return new Instrumenter(dbWriter, List.of(args.input().getParent()), List.of(runtimeJar), args.startMethodName())
+                    .transformToString(args.input());
+        }
+    }
+
+    private static void runUserCode(URLClassLoader cl, String className, String[] programArgs) throws Exception {
+        Class<?> userClass = cl.loadClass(className);
+        Method userMain = userClass.getMethod("main", String[].class);
+        userMain.setAccessible(true);
+        try {
+            userMain.invoke(null, (Object) programArgs);
+        } catch (InvocationTargetException ignored) {
+        }
+    }
 
     static Method getStartMethod(String startMethodName, Class<?> userClass) {
         List<Method> startMethods = Arrays.stream(userClass.getMethods())
@@ -339,36 +316,23 @@ public class Main {
         return input.getFileName().toString().replace(".java", "");
     }
 
-    static URLClassLoader createClassLoader(Path classDir, Path runtimeJar)
-            throws Exception {
+    static URLClassLoader createClassLoader(Path classDir, Path runtimeJar) throws Exception {
         return new URLClassLoader(
-                new URL[]{
-                        classDir.toUri().toURL(),
-                        runtimeJar.toUri().toURL(),
-                },
+                new URL[]{classDir.toUri().toURL(), runtimeJar.toUri().toURL()},
                 ClassLoader.getPlatformClassLoader()
         );
     }
 
-    static void compile(
-            String source,
-            String className,
-            Path outputDir,
-            Path runtimeJar
-    ) {
-
+    static void compile(String source, String className, Path outputDir, Path runtimeJar) {
         JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
         if (compiler == null) {
             throw new RuntimeException("No Java compiler available. Run with a JDK, not a JRE.");
         }
 
         JavaFileObject sourceFile = new InMemoryJavaFile(className, source);
-
-        String classpath = runtimeJar.toAbsolutePath().toString();
-
         List<String> options = List.of(
                 "-d", outputDir.toAbsolutePath().toString(),
-                "-cp", classpath
+                "-cp", runtimeJar.toAbsolutePath().toString()
         );
 
         JavaCompiler.CompilationTask task = compiler.getTask(
