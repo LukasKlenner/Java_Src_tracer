@@ -13,7 +13,6 @@ import com.github.javaparser.ast.expr.FieldAccessExpr;
 import com.github.javaparser.ast.expr.IntegerLiteralExpr;
 import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.expr.NameExpr;
-import com.github.javaparser.ast.expr.SwitchExpr;
 import com.github.javaparser.ast.expr.UnaryExpr;
 import com.github.javaparser.ast.expr.VariableDeclarationExpr;
 import com.github.javaparser.ast.stmt.BlockStmt;
@@ -25,43 +24,42 @@ import com.github.javaparser.ast.stmt.ForStmt;
 import com.github.javaparser.ast.stmt.IfStmt;
 import com.github.javaparser.ast.stmt.ReturnStmt;
 import com.github.javaparser.ast.stmt.Statement;
+import com.github.javaparser.ast.stmt.SwitchEntry;
 import com.github.javaparser.ast.stmt.SwitchStmt;
 import com.github.javaparser.ast.stmt.ThrowStmt;
 import com.github.javaparser.ast.stmt.WhileStmt;
 import com.github.javaparser.ast.stmt.YieldStmt;
+import com.github.javaparser.ast.expr.SwitchExpr;
 import com.github.javaparser.ast.type.ClassOrInterfaceType;
 import com.github.javaparser.ast.visitor.ModifierVisitor;
 import com.github.javaparser.ast.visitor.Visitable;
 import srctracer.instrumenter.visitors.InstrumenterVisitor;
 
-import java.util.function.Consumer;
-
-import static com.github.javaparser.StaticJavaParser.parseStatement;
 import static srctracer.instrumenter.Instrumenter.MAIN_LIFECYCLE_CATCH_PARAM;
-import static srctracer.util.JavaParserUtil.alwaysExits;
 import static srctracer.util.JavaParserUtil.alwaysExitsLoop;
 import static srctracer.util.JavaParserUtil.isMainMethod;
 import static srctracer.util.JavaParserUtil.resolvedToAstType;
-import static srctracer.util.JavaParserUtil.wrapInSwitchExpression;
 
 /**
- * Further instruments the given {@link CompilationUnit} to trace implicit exceptions, such as those thrown by arithmetic operations or null dereferences.
- * <p>
- * This is done in two phases for each expression:
- * 1) Analyze expression semantics into an evaluation plan.
- * 2) Rewrite the plan into JavaParser statements and expression replacements.
- * <p>
- * This visitor must be applied after the {@link InstrumenterVisitor} has been applied, so that the statements that are added
- * are not instrumented again.
+ * Further instruments the given {@link CompilationUnit} to trace implicit
+ * exceptions such as those thrown by arithmetic operations or null dereferences.
+ *
+ * <p>This visitor must be applied after the {@link InstrumenterVisitor} has run,
+ * so that the statements added here are not instrumented again.
+ *
+ * <p>For each statement, the {@link ImplicitExceptionEmitter} walks the
+ * statement's expression recursively, extracting sub-expressions into temporary
+ * variables and inserting check if-statements before the statement. Evaluation
+ * order strictly follows the JLS.
  */
 public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
-    private int nextTmpId = 0;
-    private final ImplicitExceptionAnalyzer analyzer = new ImplicitExceptionAnalyzer();
-    private final EvaluationPlanRewriter rewriter = new EvaluationPlanRewriter();
+
+    private final ImplicitExceptionEmitter emitter;
     private final String lifecycleMethodName;
 
     public ImplicitExceptionVisitor(String lifecycleMethodName) {
         this.lifecycleMethodName = lifecycleMethodName;
+        this.emitter = new ImplicitExceptionEmitter(0);
     }
 
     @Override
@@ -70,7 +68,7 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
         boolean isMainMethod = isMainMethod(md);
 
         if (isMainMethod && !isLifecycleMethod) {
-            // Do not instrument the main method if it's a lifecycle method
+            // Do not instrument the main method if it is a lifecycle method
             return md;
         }
 
@@ -118,6 +116,7 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
         addImplicitExceptionChecks(n);
         return n;
     }
+
     @Override
     public Visitable visit(WhileStmt n, Void a) {
         super.visit(n, a);
@@ -135,80 +134,121 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
 
     @Override
     public Visitable visit(DoStmt n, Void a) {
-        BlockStmt whileStmt = rewriteDoWhileToWhile(n);
-        replaceStatement(n, whileStmt);
-        whileStmt.accept(this, a);
-        return whileStmt;
+        BlockStmt block = rewriteDoWhileToWhile(n);
+        replaceStatement(n, block);
+        block.accept(this, a);
+        return block;
     }
 
     @Override
     public Visitable visit(ForEachStmt n, Void a) {
-        BlockStmt whileStmt = rewriteForEachToWhile(n);
-        replaceStatement(n, whileStmt);
-        whileStmt.accept(this, a);
-        return whileStmt;
+        BlockStmt block = rewriteForEachToWhile(n);
+        replaceStatement(n, block);
+        block.accept(this, a);
+        return block;
     }
-
 
     @Override
     public Visitable visit(ExplicitConstructorInvocationStmt n, Void a) {
         super.visit(n, a);
+        // super()/this() must be the first statement in a constructor – we cannot
+        // insert checks before it. Instead, each argument that needs checks is
+        // wrapped in a switch expression whose default block provides the required
+        // statement context: switch(0) { default: { checks...; yield arg; } }
         for (int i = 0; i < n.getArguments().size(); i++) {
-            Expression arg = n.getArguments().get(i).clone();
-
-            n.setArgument(i, wrapInSwitchExpression(arg));
-            addImplicitExceptionChecks((Statement) arg.getParentNode().get());
+            NodeList<Statement> checks = new NodeList<>();
+            Expression newArg = emitter.emit(n.getArgument(i), checks);
+            if (!checks.isEmpty()) {
+                NodeList<Statement> switchBody = new NodeList<>(checks);
+                switchBody.add(new YieldStmt(newArg));
+                n.setArgument(i, new SwitchExpr(
+                        new IntegerLiteralExpr("0"),
+                        new NodeList<>(new SwitchEntry(
+                                new NodeList<>(),
+                                SwitchEntry.Type.BLOCK,
+                                new NodeList<>(new BlockStmt(switchBody)),
+                                true,
+                                null
+                        ))
+                ));
+            } else {
+                n.setArgument(i, newArg);
+            }
         }
         return n;
     }
 
+    // ── Statement-level dispatch ─────────────────────────────────────────────
+
     private void addImplicitExceptionChecks(Statement stmt) {
         NodeList<Statement> checks = switch (stmt) {
-            case ExpressionStmt es ->
-                    rewriteExpression(es.getExpression(), EvaluationContext.NORMAL, es::setExpression);
+            case ExpressionStmt es -> {
+                NodeList<Statement> out = new NodeList<>();
+                es.setExpression(emitter.emit(es.getExpression(), out));
+                yield out;
+            }
             case ReturnStmt rs -> {
-                if (rs.getExpression().isPresent()) {
-                    yield rewriteExpression(rs.getExpression().get(), EvaluationContext.RETURN_VALUE, rs::setExpression);
-                }
-                yield new NodeList<>();
+                if (rs.getExpression().isEmpty()) yield new NodeList<>();
+                NodeList<Statement> out = new NodeList<>();
+                rs.setExpression(emitter.emit(rs.getExpression().get(), out));
+                yield out;
             }
-            case YieldStmt ys ->
-                    rewriteExpression(ys.getExpression(), EvaluationContext.RETURN_VALUE, ys::setExpression);
-            case IfStmt is -> rewriteExpression(is.getCondition(), EvaluationContext.CONDITION, is::setCondition);
+            case YieldStmt ys -> {
+                NodeList<Statement> out = new NodeList<>();
+                ys.setExpression(emitter.emit(ys.getExpression(), out));
+                yield out;
+            }
+            case IfStmt is -> {
+                NodeList<Statement> out = new NodeList<>();
+                is.setCondition(emitter.emit(is.getCondition(), out));
+                yield out;
+            }
             case ThrowStmt ts -> {
-                if (ts.getExpression().toString().equals(MAIN_LIFECYCLE_CATCH_PARAM)) {
-                    // Don't instrument the main lifecycle catch parameter.
+                // Skip the main-lifecycle rethrow – that variable is never null
+                if (ts.getExpression().toString().equals(MAIN_LIFECYCLE_CATCH_PARAM))
                     yield new NodeList<>();
-                }
-                yield rewriteExpression(ts.getExpression(), EvaluationContext.THROW_EXPRESSION, ts::setExpression);
+                NodeList<Statement> out = new NodeList<>();
+                ts.setExpression(emitter.emitThrowExpression(ts.getExpression(), out));
+                yield out;
             }
-            case WhileStmt ws ->
-                    rewriteExpression(ws.getCondition(), EvaluationContext.LOOP_CONDITION, ws::setCondition);
-            case SwitchStmt ss ->
-                rewriteExpression(ss.getSelector(), EvaluationContext.SWITCH_SELECTOR, ss::setSelector);
-
+            case WhileStmt ws -> {
+                NodeList<Statement> out = new NodeList<>();
+                ws.setCondition(emitter.emitLoopCondition(ws.getCondition(), out));
+                yield out;
+            }
+            case SwitchStmt ss -> {
+                NodeList<Statement> out = new NodeList<>();
+                ss.setSelector(emitter.emitSwitchSelector(ss.getSelector(), ss, out));
+                yield out;
+            }
             default -> throw new IllegalArgumentException("Unsupported statement type: " + stmt);
         };
 
-        if (checks.isEmpty()) {
-            return;
-        }
+        if (checks.isEmpty()) return;
 
         addBeforeStatement(stmt, checks);
 
-        if (stmt instanceof WhileStmt whileStmt && !alwaysExitsLoop(whileStmt.getBody())) {
-            whileStmt.getBody().asBlockStmt().getStatements().addAll(toLoopRefreshChecks(checks));
+        // Loop conditions must be re-evaluated at the end of the loop body
+        if (stmt instanceof WhileStmt ws && !alwaysExitsLoop(ws.getBody())) {
+            ws.getBody().asBlockStmt().getStatements()
+                    .addAll(ImplicitExceptionEmitter.toLoopRefreshStatements(checks));
         }
     }
 
+    // ── Loop rewriting (for/do-while/for-each → while) ───────────────────────
+
     private WhileStmt rewriteForToWhile(ForStmt forStmt) {
-        addBeforeStatement(forStmt, new NodeList<>(forStmt.getInitialization().stream().map(ExpressionStmt::new).toList()));
+        addBeforeStatement(forStmt,
+                new NodeList<>(forStmt.getInitialization().stream()
+                        .map(ExpressionStmt::new).toList()));
 
         WhileStmt whileStmt = new WhileStmt();
-        whileStmt.setCondition(forStmt.getCompare().orElse(new BooleanLiteralExpr(true)).clone());
+        whileStmt.setCondition(forStmt.getCompare()
+                .orElse(new BooleanLiteralExpr(true)).clone());
         BlockStmt body = new BlockStmt();
         body.getStatements().add(forStmt.getBody().clone());
-        body.getStatements().addAll(forStmt.getUpdate().stream().map(ExpressionStmt::new).map(Statement::clone).toList());
+        body.getStatements().addAll(forStmt.getUpdate().stream()
+                .map(ExpressionStmt::new).map(Statement::clone).toList());
         whileStmt.setBody(body);
         return whileStmt;
     }
@@ -221,7 +261,6 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
         BlockStmt outer = new BlockStmt();
         outer.getStatements().add(doStmt.getBody().clone());
         outer.getStatements().add(whileStmt);
-
         return outer;
     }
 
@@ -236,51 +275,45 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
     private BlockStmt rewriteForEachArrayToWhile(ForEachStmt forEachStmt) {
         VariableDeclarator variable = forEachStmt.getVariable().getVariable(0);
 
-        // store array in a temporary variable to avoid re-evaluating the expression in each iteration
-        String arrayExpr = "__srctracer_tmp$" + nextTmpId++;
+        // Store array in a temp to avoid re-evaluating the iterable each iteration
+        String arrayTmp = emitter.freshTmp();
         VariableDeclarator arrayTemp = new VariableDeclarator(
                 resolvedToAstType(forEachStmt.getIterable().calculateResolvedType()),
-                arrayExpr,
+                arrayTmp,
                 forEachStmt.getIterable().clone()
         );
 
-        // int __srctracer_tmp$index = 0;
+        // int __srctracer_tmp$N = 0;
+        String indexTmp = emitter.freshTmp();
         VariableDeclarator index = new VariableDeclarator(
                 new ClassOrInterfaceType(null, "int"),
-                "__srctracer_tmp$" + nextTmpId++,
+                indexTmp,
                 new IntegerLiteralExpr("0")
         );
 
         // while (index < array.length) { ... }
         WhileStmt whileStmt = new WhileStmt();
-        whileStmt.setCondition(
-                new BinaryExpr(
-                        new NameExpr(index.getNameAsString()),
-                        new FieldAccessExpr(new NameExpr(arrayExpr), "length"),
-                        BinaryExpr.Operator.LESS
-                )
-        );
+        whileStmt.setCondition(new BinaryExpr(
+                new NameExpr(indexTmp),
+                new FieldAccessExpr(new NameExpr(arrayTmp), "length"),
+                BinaryExpr.Operator.LESS
+        ));
 
         BlockStmt body = new BlockStmt();
-
         body.addStatement(forEachStmt.getBody().clone());
 
-        // Type variable = array[index];
+        // Type variable = array[index];  (inserted after _LOOP_BODY at position 0)
         VariableDeclarator element = new VariableDeclarator(
                 variable.getType().clone(),
                 variable.getNameAsString(),
-                new ArrayAccessExpr(new NameExpr(arrayExpr), new NameExpr(index.getNameAsString()))
+                new ArrayAccessExpr(new NameExpr(arrayTmp), new NameExpr(indexTmp))
         );
-
-        // add after loop enter recording
-        body.getStatement(0).asBlockStmt().addStatement(1, new ExpressionStmt(
-                new VariableDeclarationExpr(element)
-        ));
+        body.getStatement(0).asBlockStmt().addStatement(1,
+                new ExpressionStmt(new VariableDeclarationExpr(element)));
 
         // index++;
         body.addStatement(new ExpressionStmt(
-                new UnaryExpr(new NameExpr(index.getNameAsString()), UnaryExpr.Operator.POSTFIX_INCREMENT)
-        ));
+                new UnaryExpr(new NameExpr(indexTmp), UnaryExpr.Operator.POSTFIX_INCREMENT)));
 
         whileStmt.setBody(body);
 
@@ -288,7 +321,6 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
         outer.addStatement(new ExpressionStmt(new VariableDeclarationExpr(arrayTemp)));
         outer.addStatement(new ExpressionStmt(new VariableDeclarationExpr(index)));
         outer.addStatement(whileStmt);
-
         return outer;
     }
 
@@ -296,81 +328,39 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
         VariableDeclarator variable = forEachStmt.getVariable().getVariable(0);
 
         // Iterator<Type> iterator = iterable.iterator();
-        String iteratorName = "__srctracer_tmp$" + nextTmpId++;
+        String iteratorTmp = emitter.freshTmp();
         VariableDeclarator iterator = new VariableDeclarator(
                 new ClassOrInterfaceType(null, "java.util.Iterator")
                         .setTypeArguments(variable.getType().clone()),
-                iteratorName,
-                new MethodCallExpr(
-                        forEachStmt.getIterable().clone(),
-                        "iterator"
-                )
+                iteratorTmp,
+                new MethodCallExpr(forEachStmt.getIterable().clone(), "iterator")
         );
 
         // while (iterator.hasNext()) { ... }
         WhileStmt whileStmt = new WhileStmt();
-        whileStmt.setCondition(
-                new MethodCallExpr(new NameExpr(iteratorName), "hasNext")
-        );
+        whileStmt.setCondition(new MethodCallExpr(new NameExpr(iteratorTmp), "hasNext"));
 
         BlockStmt body = new BlockStmt();
-
-
         body.addStatement(forEachStmt.getBody().clone());
 
-        // Type variable = iterator.next();
+        // Type variable = iterator.next();  (inserted after _LOOP_BODY at position 0)
         VariableDeclarator element = new VariableDeclarator(
                 variable.getType().clone(),
                 variable.getNameAsString(),
-                new MethodCallExpr(new NameExpr(iteratorName), "next")
+                new MethodCallExpr(new NameExpr(iteratorTmp), "next")
         );
-
-        // add after loop enter recording
-        body.getStatement(0).asBlockStmt().addStatement(1, new ExpressionStmt(
-                new VariableDeclarationExpr(element)
-        ));
+        body.getStatement(0).asBlockStmt().addStatement(1,
+                new ExpressionStmt(new VariableDeclarationExpr(element)));
 
         whileStmt.setBody(body);
 
         BlockStmt outer = new BlockStmt();
         outer.addStatement(new ExpressionStmt(new VariableDeclarationExpr(iterator)));
         outer.addStatement(whileStmt);
-
         return outer;
     }
 
-    private NodeList<Statement> rewriteExpression(
-            Expression expression,
-            EvaluationContext context,
-            Consumer<Expression> expressionSetter
-    ) {
-        EvaluationPlan plan = analyzer.analyzeExpression(expression, context);
-        EvaluationPlanRewriter.RewriteResult result = rewriter.rewrite(plan, nextTmpId);
-        nextTmpId = result.nextTmpId();
-        expressionSetter.accept(result.result());
-        return result.statements();
-    }
-
-    private static NodeList<Statement> toLoopRefreshChecks(NodeList<Statement> checks) {
-        NodeList<Statement> refreshChecks = new NodeList<>();
-        for (Statement check : checks) {
-            Statement cloned = check.clone();
-            if (cloned instanceof ExpressionStmt expressionStmt
-                    && expressionStmt.getExpression() instanceof VariableDeclarationExpr variableDeclarationExpr) {
-                for (var variable : variableDeclarationExpr.getVariables()) {
-                    if (variable.getInitializer().isPresent()) {
-                        refreshChecks.add(parseStatement(
-                                variable.getNameAsString() + " = " + variable.getInitializer().get() + ";"
-                        ));
-                    }
-                }
-                continue;
-            }
-            refreshChecks.add(cloned);
-        }
-        return refreshChecks;
-    }
-
+    // ── AST manipulation helpers ─────────────────────────────────────────────
 
     private static void addBeforeStatement(Statement stmt, NodeList<? extends Statement> statements) {
         Node parent = stmt.getParentNode().orElse(null);

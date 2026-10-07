@@ -23,7 +23,6 @@ import com.github.javaparser.ast.stmt.ReturnStmt;
 import com.github.javaparser.ast.stmt.Statement;
 import com.github.javaparser.ast.stmt.SwitchEntry;
 import com.github.javaparser.ast.stmt.SwitchStmt;
-import com.github.javaparser.ast.stmt.ThrowStmt;
 import com.github.javaparser.ast.stmt.TryStmt;
 import com.github.javaparser.ast.stmt.WhileStmt;
 import com.github.javaparser.ast.type.Type;
@@ -51,7 +50,6 @@ import static srctracer.util.JavaParserUtil.isMainMethod;
 import static srctracer.util.JavaParserUtil.isNarrowPrimitive;
 import static srctracer.util.JavaParserUtil.parseStatement;
 import static srctracer.util.JavaParserUtil.parseTracerCall;
-import static srctracer.util.JavaParserUtil.parseTracerCallExpr;
 import static srctracer.util.JavaParserUtil.resolvedToAstType;
 import static srctracer.util.JavaParserUtil.unwrapEnclosed;
 import static srctracer.util.JavaParserUtil.wrapInSwitchExpression;
@@ -254,7 +252,7 @@ public class InstrumenterVisitor extends ModifierVisitor<Void> {
         elseExpr.accept(this, a);
 
         stats.incrementTernaryCount();
-        return castType.<Visitable>map(t -> new CastExpr(t, new EnclosedExpr(n))).orElse(n);
+        return castType.<Visitable>map(t -> new CastExpr(t, n)).orElse(n);
     }
 
     private Optional<Type> computePreservationCast(ConditionalExpr n) {
