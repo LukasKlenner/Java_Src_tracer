@@ -11,7 +11,7 @@ class Input {
     public static void main(String[] args) {
         Input obj = new Input();
         short s = 10;
-        int result = obj.m(true ? s : 20);
+        int result = obj.m(false ? s : 20);
         if (result == 1) {
             int a = 1;
         }

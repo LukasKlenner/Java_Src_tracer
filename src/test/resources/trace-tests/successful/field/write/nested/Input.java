@@ -9,8 +9,12 @@ class Input {
         this.inner = i;
     }
 
+    int getValue() {
+        return 1;
+    }
+
     public static void main(String[] args) {
         Input obj = new Input(new Inner());
-        obj.inner.value = 1;
+        obj.inner.value = obj.getValue();
     }
 }

@@ -11,9 +11,12 @@ class Input {
         return 0;
     }
 
+    public int getValue() {
+        return 2;
+    }
+
     public static void main(String[] args) {
         Input obj = new Input();
-        int[][] arr = new int[3][2];
-        obj.getArray()[obj.getIndex(1)][obj.getIndex(2)] = 42;
+        obj.getArray()[obj.getIndex(1)][obj.getIndex(2)] = obj.getValue();
     }
 }
