@@ -23,6 +23,8 @@ import com.github.javaparser.ast.stmt.SwitchStmt;
 import com.github.javaparser.resolution.declarations.ResolvedEnumConstantDeclaration;
 import com.github.javaparser.resolution.declarations.ResolvedFieldDeclaration;
 
+import java.util.List;
+
 import static srctracer.util.JavaParserUtil.isLongOrInt;
 import static srctracer.util.JavaParserUtil.isSimpleExpression;
 import static srctracer.util.JavaParserUtil.switchNeedsNullCheck;
@@ -76,8 +78,8 @@ public final class ImplicitExceptionAnalyzer {
             case AssignExpr assignExpr -> analyzeAssign(assignExpr, context);
             case CastExpr castExpr -> analyzeCast(castExpr, context);
             case ArrayCreationExpr arrayCreationExpr -> analyzeArrayCreation(arrayCreationExpr, context);
-            case ObjectCreationExpr objectCreationExpr -> analyzeObjectCreation(objectCreationExpr, context);
             case ArrayInitializerExpr arrayInitializerExpr -> analyzeArrayInitializer(arrayInitializerExpr, context);
+            case ObjectCreationExpr objectCreationExpr -> analyzeObjectCreation(objectCreationExpr, context);
             case BinaryExpr binaryExpr -> analyzeBinary(binaryExpr, context);
             case UnaryExpr unaryExpr -> analyzeUnary(unaryExpr, context);
             case EnclosedExpr enclosedExpr -> analyzeEnclosed(enclosedExpr, context);
@@ -210,20 +212,47 @@ public final class ImplicitExceptionAnalyzer {
     private EvaluationPlan analyzeArrayCreation(ArrayCreationExpr expression, EvaluationContext context) {
         ArrayCreationExpr rewritten = expression.clone();
         EvaluationPlan plan = new EvaluationPlan();
-
-        for (int i = 0; i < rewritten.getLevels().size(); i++) {
-            ArrayCreationLevel level = rewritten.getLevels().get(i);
-            if (expression.getLevels().get(i).getDimension().isPresent()) {
-                Expression dimValue = extractToValue(expression.getLevels().get(i).getDimension().get(), plan, EvaluationContext.NORMAL);
-                plan.addStep(new CheckStep(new NegativeArraySizeCheck(dimValue.clone())));
-                level.setDimension(dimValue);
-            }
-        }
+        plan.setResult(rewritten);
 
         if (expression.getInitializer().isPresent()) {
             EvaluationPlan initPlan = analyzeArrayInitializer(expression.getInitializer().get(), EvaluationContext.NORMAL);
             plan.addAll(initPlan);
             rewritten.setInitializer((ArrayInitializerExpr) initPlan.getResult());
+            return plan;
+        }
+
+        List<Expression> dimensionExpressions = new java.util.ArrayList<>();
+
+        for (int i = 0; i < rewritten.getLevels().size(); i++) {
+            ArrayCreationLevel level = rewritten.getLevels().get(i);
+            if (expression.getLevels().get(i).getDimension().isPresent()) {
+                Expression dimValue = extractToValue(expression.getLevels().get(i).getDimension().get(), plan, EvaluationContext.NORMAL);
+                level.setDimension(dimValue);
+                dimensionExpressions.add(dimValue);
+            }
+        }
+
+        dimensionExpressions.forEach(dimExpr -> plan.addStep(new CheckStep(new NegativeArraySizeCheck(dimExpr.clone()))));
+
+        return plan;
+    }
+
+    private EvaluationPlan analyzeArrayInitializer(ArrayInitializerExpr expression, EvaluationContext context) {
+        ArrayInitializerExpr rewritten = expression.clone();
+        EvaluationPlan plan = new EvaluationPlan();
+
+        for (int i = 0; i < rewritten.getValues().size(); i++) {
+            Expression initializerValue = expression.getValues().get(i);
+
+            if (initializerValue instanceof ArrayInitializerExpr nestedInitializer) {
+                EvaluationPlan nestedPlan = analyzeArrayInitializer(nestedInitializer, EvaluationContext.NORMAL);
+                plan.addAll(nestedPlan);
+                rewritten.getValues().set(i, nestedPlan.getResult());
+                continue;
+            }
+
+            Expression value = extractToValue(initializerValue, plan, EvaluationContext.ASSIGNMENT_VALUE);
+            rewritten.getValues().set(i, value);
         }
 
         plan.setResult(rewritten);
@@ -237,28 +266,6 @@ public final class ImplicitExceptionAnalyzer {
         for (int i = 0; i < rewritten.getArguments().size(); i++) {
             Expression argValue = extractToValue(expression.getArgument(i), plan, EvaluationContext.ASSIGNMENT_VALUE);
             rewritten.setArgument(i, argValue);
-        }
-
-        plan.setResult(rewritten);
-        return plan;
-    }
-
-    private EvaluationPlan analyzeArrayInitializer(ArrayInitializerExpr expression, EvaluationContext context) {
-        ArrayInitializerExpr rewritten = expression.clone();
-        EvaluationPlan plan = new EvaluationPlan();
-
-        if (!(expression.getParentNode().get() instanceof ArrayCreationExpr ace)) {
-            throw new IllegalStateException("ArrayInitializerExpr must be a child of ArrayCreationExpr");
-        }
-
-        // no array store check for primitive types
-        int implicitChecksPerElement = ace.getElementType().isPrimitiveType() ? 2 : 3;
-
-        for (int i = 0; i < rewritten.getValues().size(); i++) {
-            Expression value = extractToValue(expression.getValues().get(i), plan, EvaluationContext.ASSIGNMENT_VALUE);
-            rewritten.getValues().set(i, value);
-
-            plan.addStep(new NoImplicitExceptionStep(implicitChecksPerElement));
         }
 
         plan.setResult(rewritten);
@@ -279,21 +286,22 @@ public final class ImplicitExceptionAnalyzer {
 
         Expression leftValue = extractToValue(expression.getLeft(), plan, context);
         String resultSlot = newSlot();
-        plan.addStep(new EvaluateStep(resultSlot, leftValue.clone()));
+        plan.addStep(new EvaluateStep(resultSlot, leftValue.clone(), false));
+        NameExpr condition = new NameExpr(resultSlot);
 
         if (operator == BinaryExpr.Operator.AND) {
             EvaluationPlan thenPlan = new EvaluationPlan();
             Expression rightValue = extractToValue(expression.getRight(), thenPlan, context);
             thenPlan.addStep(new EvaluateStep(resultSlot, rightValue));
-            plan.addStep(new BranchStep(leftValue.clone(), thenPlan, new EvaluationPlan()));
+            plan.addStep(new BranchStep(condition, thenPlan, new EvaluationPlan()));
         } else {
             EvaluationPlan elsePlan = new EvaluationPlan();
             Expression rightValue = extractToValue(expression.getRight(), elsePlan, context);
             elsePlan.addStep(new EvaluateStep(resultSlot, rightValue));
-            plan.addStep(new BranchStep(leftValue.clone(), new EvaluationPlan(), elsePlan));
+            plan.addStep(new BranchStep(condition, new EvaluationPlan(), elsePlan));
         }
 
-        plan.setResult(new NameExpr(resultSlot));
+        plan.setResult(condition);
         return plan;
     }
 

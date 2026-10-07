@@ -93,8 +93,8 @@ public final class EvaluationPlanRewriter {
         RewriteContext thenContext = new RewriteContext(context);
         RewriteContext elseContext = new RewriteContext(context);
 
-        NodeList<Statement> thenStatements = new NodeList<>();
-        NodeList<Statement> elseStatements = new NodeList<>();
+        NodeList<Statement> thenStatements = NodeList.nodeList(parseTracerCall(TracerMethod.IF));
+        NodeList<Statement> elseStatements = NodeList.nodeList(parseTracerCall(TracerMethod.ELSE));
         rewritePlan(step.thenPlan(), thenStatements, thenContext);
         rewritePlan(step.elsePlan(), elseStatements, elseContext);
 

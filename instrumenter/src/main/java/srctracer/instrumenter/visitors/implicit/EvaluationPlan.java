@@ -5,6 +5,7 @@ import com.github.javaparser.ast.expr.NameExpr;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class EvaluationPlan {
     private final List<EvaluationStep> steps = new ArrayList<>();
@@ -35,13 +36,20 @@ public final class EvaluationPlan {
                 return;
             }
 
+            AtomicBoolean replaced = new AtomicBoolean(false);
             newExpression.walk(n -> {
                 if (n.equals(new NameExpr(oldSlot))) {
                     n.replace(oldExpression);
+                    replaced.set(true);
                 }
             });
-            steps.set(steps.size() - 1, new EvaluateStep(newSlot, newExpression, isFinal));
-            return;
+
+            if (replaced.get()) {
+                // try to propagate the merging further
+                steps.removeLast();
+                addStep(new EvaluateStep(newSlot, newExpression, isFinal));
+                return;
+            }
         }
 
         steps.add(step);

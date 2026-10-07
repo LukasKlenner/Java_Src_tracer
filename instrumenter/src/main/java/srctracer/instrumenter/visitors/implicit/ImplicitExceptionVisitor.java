@@ -296,10 +296,11 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
         VariableDeclarator variable = forEachStmt.getVariable().getVariable(0);
 
         // Iterator<Type> iterator = iterable.iterator();
+        String iteratorName = "__srctracer_tmp$" + nextTmpId++;
         VariableDeclarator iterator = new VariableDeclarator(
-                new ClassOrInterfaceType(null, "Iterator")
+                new ClassOrInterfaceType(null, "java.util.Iterator")
                         .setTypeArguments(variable.getType().clone()),
-                "__srctracer_tmp$" + nextTmpId++,
+                iteratorName,
                 new MethodCallExpr(
                         forEachStmt.getIterable().clone(),
                         "iterator"
@@ -309,7 +310,7 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
         // while (iterator.hasNext()) { ... }
         WhileStmt whileStmt = new WhileStmt();
         whileStmt.setCondition(
-                new MethodCallExpr(new NameExpr("iterator"), "hasNext")
+                new MethodCallExpr(new NameExpr(iteratorName), "hasNext")
         );
 
         BlockStmt body = new BlockStmt();
@@ -321,7 +322,7 @@ public class ImplicitExceptionVisitor extends ModifierVisitor<Void> {
         VariableDeclarator element = new VariableDeclarator(
                 variable.getType().clone(),
                 variable.getNameAsString(),
-                new MethodCallExpr(new NameExpr("iterator"), "next")
+                new MethodCallExpr(new NameExpr(iteratorName), "next")
         );
 
         // add after loop enter recording
