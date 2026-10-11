@@ -6,6 +6,8 @@ import com.github.javaparser.ast.ImportDeclaration;
 import com.github.javaparser.ast.Modifier;
 import com.github.javaparser.ast.body.CallableDeclaration;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
+import com.github.javaparser.ast.body.EnumConstantDeclaration;
+import com.github.javaparser.ast.body.EnumDeclaration;
 import com.github.javaparser.ast.body.FieldDeclaration;
 import com.github.javaparser.ast.body.InitializerDeclaration;
 import com.github.javaparser.ast.body.Parameter;
@@ -26,7 +28,6 @@ import com.github.javaparser.ast.expr.LiteralExpr;
 import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.expr.Name;
 import com.github.javaparser.ast.expr.NameExpr;
-import com.github.javaparser.ast.expr.NullLiteralExpr;
 import com.github.javaparser.ast.expr.ObjectCreationExpr;
 import com.github.javaparser.ast.expr.SimpleName;
 import com.github.javaparser.ast.expr.SuperExpr;
@@ -69,6 +70,8 @@ class SupportedFeatures {
             new Feature(VariableDeclarator.class),
             new Feature(InitializerDeclaration.class),
             new Feature("Non-Static imports", ImportDeclaration.class, i -> !i.isStatic()),
+            new Feature(EnumDeclaration.class),
+            new Feature(EnumConstantDeclaration.class),
 
             // Standard nodes
             new Feature(CompilationUnit.class),
@@ -94,10 +97,7 @@ class SupportedFeatures {
             // conditional statements
             new Feature(IfStmt.class),
             new Feature(SwitchStmt.class),
-            new Feature("standard switch entry", SwitchEntry.class, e ->
-                    e.getGuard().map(g -> g instanceof NullLiteralExpr).orElse(true) &&
-                            e.getType() == SwitchEntry.Type.STATEMENT_GROUP
-            ),
+            new Feature("standard switch entry", SwitchEntry.class, SupportedFeatures::isSupportedSwitchEntry),
 
             // Exception handling
             new Feature(TryStmt.class),
@@ -158,6 +158,31 @@ class SupportedFeatures {
                         .map(args -> args.stream().anyMatch(a -> a == t))
                         .orElse(false))
                 .isPresent();
+    }
+
+    private static boolean isSupportedSwitchEntry(SwitchEntry entry) {
+        if (entry.getType() != SwitchEntry.Type.STATEMENT_GROUP) {
+            return false;
+        }
+
+        if (entry.getGuard().isPresent()) {
+            return false;
+        }
+
+        for (var label : entry.getLabels()) {
+            var type = label.calculateResolvedType();
+            if (type.isPrimitive()) {
+                continue;
+            }
+            if (type.isReferenceType()) {
+                if (type.asReferenceType().getTypeDeclaration().get().isEnum()) {
+                    continue;
+                }
+            }
+            return false;
+        }
+
+        return true;
     }
 
 }

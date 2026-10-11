@@ -327,7 +327,7 @@ public class InstrumenterVisitor extends AbstractInstrumenterVisitor {
             SwitchEntry entry = entries.get(i);
             Statement caseRecord = parseStatement(
                     "if (" + flag + ") { " +
-                            TracerMethod.CASE.getMethodCallString(i) +
+                            TracerMethod.CASE.getMethodCallString(i) + ";\n" +
                             flag + " = false; }");
             entry.getStatements().add(0, caseRecord);
         }
