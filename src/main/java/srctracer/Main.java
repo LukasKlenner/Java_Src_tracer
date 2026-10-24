@@ -46,6 +46,7 @@ public class Main {
               --input-sizes <file>  Skip Jazzer; read comma-separated sizes from file, generate random byte[] inputs (fuzz only)
               --key-memory <size>  JVM heap for KeY (fuzz only; default: 8g)
               --start-method <name>  Start tracing from this method (default: main). Main method is not traced if this is not the default value.
+              --no-implicit-exceptions  Skip implicit-exception recording (default: enabled)
               --             Separator for program arguments (trace/annotate)
             """;
 
@@ -99,7 +100,7 @@ public class Main {
         Path runtimeJar = resolveRuntimeJar(false);
         try (FunctionDatabaseWriter dbWriter = new CsvFunctionDatabaseWriter(
                 args.output().resolve(DEFAULT_FUNCTION_DB_NAME))) {
-            new Instrumenter(dbWriter, List.of(args.input().getParent()), List.of(runtimeJar), args.startMethodName())
+            new Instrumenter(dbWriter, List.of(args.input().getParent()), List.of(runtimeJar), args.startMethodName(), args.implicitExceptions())
                     .transform(args.input(), args.output().resolve(
                             args.input().getFileName().toString().replace(".java", ".instrumented.java")));
         }
@@ -130,6 +131,9 @@ public class Main {
     // ---- annotate: instrument + compile + run (in-memory trace) → key-annotater ----
 
     private static void annotate(TraceArgs args) throws Exception {
+        if (!args.implicitExceptions()) {
+            throw new IllegalArgumentException("--no-implicit-exceptions is not supported for annotate");
+        }
         Path runtimeJar = resolveRuntimeJar(args.binary());
         Path functionDatabaseFile = args.output().resolve(DEFAULT_FUNCTION_DB_NAME);
         String instrumentedSource = instrumentToString(args, runtimeJar);
@@ -166,6 +170,9 @@ public class Main {
     // ---- fuzz: fuzz + trace interesting inputs + produce .key files ----
 
     private static void fuzz(TraceArgs args) throws Exception {
+        if (!args.implicitExceptions()) {
+            throw new IllegalArgumentException("--no-implicit-exceptions is not supported for fuzz");
+        }
         FuzzCommand.run(args);
     }
 
@@ -180,7 +187,8 @@ public class Main {
             String startMethodName,
             String[] programArgs,
             Path inputSizesFile,
-            String keyMemory
+            String keyMemory,
+            boolean implicitExceptions
     ) {
     }
 
@@ -194,10 +202,12 @@ public class Main {
         String[] programArgs = new String[0];
         Path inputSizesFile = null;
         String keyMemory = DEFAULT_KEY_MEMORY;
+        boolean implicitExceptions = true;
 
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
                 case "--binary" -> binary = true;
+                case "--no-implicit-exceptions" -> implicitExceptions = false;
                 case "--start-method" -> {
                     if (i + 1 >= args.length) {
                         System.err.print(USAGE);
@@ -273,7 +283,7 @@ public class Main {
             };
         }
 
-        return new TraceArgs(input, output, binary, fuzzDuration, batchSize, startMethodName, programArgs, inputSizesFile, keyMemory);
+        return new TraceArgs(input, output, binary, fuzzDuration, batchSize, startMethodName, programArgs, inputSizesFile, keyMemory, implicitExceptions);
     }
 
     // ---- shared helpers ----
@@ -281,7 +291,7 @@ public class Main {
     private static String instrumentToString(TraceArgs args, Path runtimeJar) throws Exception {
         try (FunctionDatabaseWriter dbWriter = new CsvFunctionDatabaseWriter(
                 args.output().resolve(DEFAULT_FUNCTION_DB_NAME))) {
-            return new Instrumenter(dbWriter, List.of(args.input().getParent()), List.of(runtimeJar), args.startMethodName())
+            return new Instrumenter(dbWriter, List.of(args.input().getParent()), List.of(runtimeJar), args.startMethodName(), args.implicitExceptions())
                     .transformToString(args.input());
         }
     }

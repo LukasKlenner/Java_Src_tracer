@@ -1,2 +1,1 @@
-TOC*ROC*ROOORE
-TODO letztes O eigentlich nicht nötig; KeY braucht es aber vermutlich trotzdem?
+TOC*ROC*ROORUE

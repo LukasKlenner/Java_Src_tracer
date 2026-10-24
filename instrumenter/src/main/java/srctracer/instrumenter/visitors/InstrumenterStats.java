@@ -93,7 +93,7 @@ public class InstrumenterStats {
                 mains + " main wrapped, " +
                 loops + " loop, " +
                 switches + " switch, " +
-                tries + " try" +
+                tries + " try, " +
                 ternaries + " ternary";
     }
 

@@ -8,6 +8,8 @@ import java.util.List;
 
 import static srctracer.trace.TextTraceConstants.TEXT_CALL;
 import static srctracer.trace.TextTraceConstants.TEXT_CATCH;
+import static srctracer.trace.TextTraceConstants.TEXT_DIM;
+import static srctracer.trace.TextTraceConstants.TEXT_DIM_END;
 import static srctracer.trace.TextTraceConstants.TEXT_ELSE;
 import static srctracer.trace.TextTraceConstants.TEXT_END;
 import static srctracer.trace.TextTraceConstants.TEXT_IF;
@@ -46,6 +48,10 @@ public class Trace {
                 case TEXT_CATCH -> {
                     int id = readHexNumber(reader);
                     elements.add(new TraceElement.Catch(id));
+                }
+                case TEXT_DIM -> {
+                    int dim = readHexNumber(reader);
+                    elements.add(new TraceElement.Dim(dim));
                 }
                 case TEXT_IF -> elements.add(new TraceElement.If());
                 case TEXT_ELSE -> elements.add(new TraceElement.Else());

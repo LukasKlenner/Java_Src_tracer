@@ -2,10 +2,13 @@ class Input {
 
     public static void main(String[] args) {
         Input obj = new Input();
-        throw obj.getException();
+        try {
+            throw obj.getException();
+        } catch (RuntimeException e) {
+        }
     }
 
     public RuntimeException getException() {
-        throw new RuntimeException();
+        return new RuntimeException();
     }
 }

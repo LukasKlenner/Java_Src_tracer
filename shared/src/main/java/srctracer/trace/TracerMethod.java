@@ -14,6 +14,8 @@ public enum TracerMethod {
     TRY("_TRY", 0),
     TRY_END("_TRY_END", 0),
     CATCH("_CATCH", 1),
+    DIM("_DIM", 1),
+    LAST_DIM("_LAST_DIM", 1),
     IMPLICIT_EXCEPTION("_IMPLICIT_EXCEPTION", 0),
     NO_IMPLICIT_EXCEPTION("_NO_IMPLICIT_EXCEPTION", 0),
     TRACE_START("trace_start", 1),

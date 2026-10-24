@@ -28,6 +28,7 @@ import srctracer.Config;
 import srctracer.SourceTransformer;
 import srctracer.database.FunctionDatabaseWriter;
 import srctracer.instrumenter.validation.FeatureValidator;
+import srctracer.instrumenter.visitors.ArrayDimVisitor;
 import srctracer.instrumenter.visitors.BlockWrappingVisitor;
 import srctracer.instrumenter.visitors.implicit.ImplicitExceptionVisitor;
 import srctracer.instrumenter.visitors.InstrumenterVisitor;
@@ -43,15 +44,17 @@ public class Instrumenter extends SourceTransformer {
 
     private final FunctionDatabaseWriter functionDatabaseWriter;
     private final String lifecycleMethodName;
-
-    public Instrumenter(FunctionDatabaseWriter functionDatabaseWriter, List<Path> sourceRoots, List<Path> jars) throws IOException {
-        this(functionDatabaseWriter, sourceRoots, jars, null);
-    }
+    private final boolean implicitExceptions;
 
     public Instrumenter(FunctionDatabaseWriter functionDatabaseWriter, List<Path> sourceRoots, List<Path> jars, String lifecycleMethodName) throws IOException {
+        this(functionDatabaseWriter, sourceRoots, jars, lifecycleMethodName, true);
+    }
+
+    public Instrumenter(FunctionDatabaseWriter functionDatabaseWriter, List<Path> sourceRoots, List<Path> jars, String lifecycleMethodName, boolean implicitExceptions) throws IOException {
         super(createJavaParser(sourceRoots, jars));
         this.functionDatabaseWriter = functionDatabaseWriter;
         this.lifecycleMethodName = lifecycleMethodName;
+        this.implicitExceptions = implicitExceptions;
     }
 
     private static JavaParser createJavaParser(List<Path> sourceRoots, List<Path> jars) throws IOException {
@@ -90,7 +93,10 @@ public class Instrumenter extends SourceTransformer {
 
         InstrumenterVisitor v = new InstrumenterVisitor(functionDatabaseWriter, lifecycleMethodName);
         cu.accept(v, null);
-        cu.accept(new ImplicitExceptionVisitor(lifecycleMethodName), null);
+        if (implicitExceptions) {
+            cu.accept(new ImplicitExceptionVisitor(lifecycleMethodName), null);
+        }
+        cu.accept(new ArrayDimVisitor(lifecycleMethodName), null);
 
         System.out.println(v.getStats().getStatsSummary());
     }

@@ -12,5 +12,7 @@ public class TextTraceConstants {
     public static final char TEXT_TRY = 'T';
     public static final char TEXT_TRY_END = 'U';
     public static final char TEXT_CATCH = 'J';
+    public static final char TEXT_DIM = 'D';
+    public static final char TEXT_DIM_END = 'M';
     public static final char TEXT_END = 'E';
 }

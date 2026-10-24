@@ -394,6 +394,12 @@ public final class ImplicitExceptionEmitter {
      * JLS §15.10.1: dimension expressions are evaluated left-to-right. After all
      * dimensions have been evaluated, a NegativeArraySizeException is thrown if any
      * value is negative.
+     *
+     * <p>{@code _DIM} recording is handled by
+     * {@link srctracer.instrumenter.visitors.ArrayDimVisitor}, which runs as the final
+     * pass. Because this visitor reduces each dimension to a simple temp, that pass
+     * wraps only temps — preserving the "all dims evaluated before any _DIM fires"
+     * ordering without this visitor needing to know about {@code _DIM}.
      */
     private Expression emitArrayCreation(ArrayCreationExpr ac, NodeList<Statement> out) {
         ArrayCreationExpr rewritten = ac.clone();
@@ -403,15 +409,13 @@ public final class ImplicitExceptionEmitter {
             return rewritten;
         }
 
-        List<Expression> dimTemps = new ArrayList<>();
         for (int i = 0; i < ac.getLevels().size(); i++) {
             if (ac.getLevels().get(i).getDimension().isPresent()) {
-                Expression dim = extractToTemp(ac.getLevels().get(i).getDimension().get(), out);
-                rewritten.getLevels().get(i).setDimension(dim);
-                dimTemps.add(dim);
+                rewritten.getLevels().get(i).setDimension(
+                        extractToTemp(ac.getLevels().get(i).getDimension().get(), out));
             }
         }
-        dimTemps.forEach(dim -> out.add(negativeSizeCheck(dim)));
+
         return rewritten;
     }
 
@@ -626,13 +630,6 @@ public final class ImplicitExceptionEmitter {
         return parseStatement(
                 "if (" + divisor + " == 0) { "
                 + IMPLICIT_EXCEPTION.getMethodCallString() + "; throw new java.lang.ArithmeticException(); "
-                + "} else { " + NO_IMPLICIT_EXCEPTION.getMethodCallString() + "; }");
-    }
-
-    private static Statement negativeSizeCheck(Expression size) {
-        return parseStatement(
-                "if (" + size + " < 0) { "
-                + IMPLICIT_EXCEPTION.getMethodCallString() + "; throw new java.lang.NegativeArraySizeException(); "
                 + "} else { " + NO_IMPLICIT_EXCEPTION.getMethodCallString() + "; }");
     }
 

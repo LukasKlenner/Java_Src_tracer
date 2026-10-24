@@ -55,6 +55,26 @@ public final class Trace {
         return condition;
     }
 
+    public static int _DIM(int dimension) {
+        if (dimension < 0) {
+            _IF();
+            throw new NegativeArraySizeException("Negative array size: " + dimension);
+        } else {
+            write("D" + Integer.toHexString(dimension));
+        }
+        return dimension;
+    }
+
+    public static int _LAST_DIM(int dimension) {
+        if (dimension < 0) {
+            _IF();
+            throw new NegativeArraySizeException("Negative array size: " + dimension);
+        } else {
+            _ELSE();
+        }
+        return dimension;
+    }
+
     public static void _TRY() {
         write("T");
     }

@@ -43,7 +43,7 @@ public class KeYRetracingTest {
 
     @ParameterizedTest(name = "[{index}] {0}")
     @MethodSource("testCases")
-    void testTraceRecording(
+    void testRetracing(
             String testName,
             Path testDir,
             @TempDir Path tempDir) throws Exception {
@@ -74,7 +74,16 @@ public class KeYRetracingTest {
         KeY key = new KeY(proofFile);
         key.runKey();
 
-        if (!key.isProofClosed()) {
+        boolean proofClosed;
+
+        try {
+            proofClosed = key.isProofClosed();
+        } catch (Exception e) {
+            e.printStackTrace();
+            proofClosed = false;
+        }
+
+        if (!proofClosed) {
 
             Path preserved = Path.of(
                     "build",

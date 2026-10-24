@@ -8,6 +8,9 @@ public sealed interface TraceElement {
     record Catch(int catchIndex) implements TraceElement {
     }
 
+    record Dim(int dimension) implements TraceElement {
+    }
+
     record If() implements TraceElement {
     }
 

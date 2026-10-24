@@ -114,10 +114,13 @@ public class InstrumenterVisitor extends AbstractInstrumenterVisitor {
         String name = enclosingTypeName(md);
 
         BlockStmt tryBlock = new BlockStmt();
-        // The _TRY marker here is needed for KeY retrace only — the original source has no outer try.
+        // The _TRY and _TRY_END markers here are needed for KeY retrace only — the original source has no outer try.
         tryBlock.addStatement(parseTracerCall(TracerMethod.TRY));
         for (Statement s : original.getStatements()) {
             tryBlock.addStatement(s.clone());
+        }
+        if (!alwaysExits(tryBlock)) {
+            tryBlock.addStatement(parseTracerCall(TracerMethod.TRY_END));
         }
 
         BlockStmt finallyBlock = new BlockStmt();

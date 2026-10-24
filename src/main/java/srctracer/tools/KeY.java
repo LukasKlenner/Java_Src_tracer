@@ -11,7 +11,6 @@ import static srctracer.tools.ToolsUtils.findProjectRoot;
 public class KeY {
 
     private static final String KEY_DIR = "tools/key";
-    private static final String KEY_JAR = "key.jar";
 
     private final Path keYProofFile;
 
@@ -83,13 +82,15 @@ public class KeY {
     }
 
     private static Path resolveKeyJar() {
-        Path projectRoot = findProjectRoot();
-        Path jar = projectRoot.resolve(KEY_DIR).resolve(KEY_JAR);
-        if (!Files.exists(jar)) {
-            throw new RuntimeException("KeY JAR not found: " + jar
-                    + "\nPlace " + KEY_JAR + " in " + projectRoot.resolve(KEY_DIR));
+        Path keyDir = findProjectRoot().resolve(KEY_DIR);
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(keyDir, "key*exe*.jar")) {
+            for (Path entry : stream) {
+                return entry;
+            }
+        } catch (Exception e) {
+            throw new RuntimeException("Could not scan for KeY JAR in " + keyDir, e);
         }
-        return jar;
+        throw new RuntimeException("No KeY JAR found in " + keyDir + "\nPlace a key*.jar file there.");
     }
 
 }
