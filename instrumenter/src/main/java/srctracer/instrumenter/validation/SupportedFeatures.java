@@ -121,8 +121,9 @@ class SupportedFeatures {
             new Feature(FieldAccessExpr.class),
 
             // array expressions
-            new Feature(ArrayCreationExpr.class),
-            new Feature(ArrayInitializerExpr.class),
+            new Feature("Array Creation with initializer or fully specified dimensions", ArrayCreationExpr.class, n -> n.getInitializer().isPresent() || n.getLevels().stream().allMatch(l -> l.getDimension().isPresent())),
+            // array initializer expressions without explicit array creation expression are not supported because they are not fully supported by the KeY Java AST
+            new Feature("Array Initializer expressions with explicit array creation expression", ArrayInitializerExpr.class, n -> n.getParentNode().filter(p -> p instanceof ArrayCreationExpr).isPresent()),
             new Feature(ArrayAccessExpr.class),
             new Feature(ArrayCreationLevel.class),
 
@@ -138,7 +139,7 @@ class SupportedFeatures {
 
             // disallow generic and other complex types
             new Feature("Types", Type.class, t ->
-                    !isGeneric(t) && !t.isVarType() && !t.isIntersectionType() &&  !t.isUnionType()),
+                    !isGeneric(t) && !t.isVarType() && !t.isIntersectionType() && !t.isUnionType()),
     };
 
     private SupportedFeatures() {

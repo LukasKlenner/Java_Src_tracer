@@ -16,7 +16,7 @@ public class FeatureValidator implements Validator {
             for (Feature f : SUPPORTED_FEATURES) {
                 if (f.handlesNode(node)) {
                     if (!f.matches(node)) {
-                        problemReporter.report(node, "Handling feature does not match: " + f.description);
+                        problemReporter.report(node, "A feature " + f.description + " handles the given node type, but the node does not match the feature's criteria.");
                     }
                     handled = true;
                 }

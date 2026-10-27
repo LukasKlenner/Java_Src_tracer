@@ -23,6 +23,6 @@ class Input {
 
     public static void main(String[] args) {
         Input obj = new Input();
-        int[][] arr = new int[][]{{obj.getNumber(1), obj.getNumber(2)}, {obj.getNumber(3), obj.getNumber(4)}};
+        int[][] arr = new int[][]{new int[]{obj.getNumber(1), obj.getNumber(2)}, new int[]{obj.getNumber(3), obj.getNumber(4)}};
     }
 }
