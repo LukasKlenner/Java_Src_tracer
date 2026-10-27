@@ -12,9 +12,10 @@ public class KeyAnnotater {
             Path inputFile,
             Path outputDir,
             Path traceFile,
-            Path functionDatabaseFile
+            Path functionDatabaseFile,
+            boolean strictRetracing
     ) throws IOException {
-        annotate(inputFile, outputDir, traceFile, functionDatabaseFile, null);
+        annotate(inputFile, outputDir, traceFile, functionDatabaseFile, null, strictRetracing);
     }
 
     public static void annotate(
@@ -22,13 +23,14 @@ public class KeyAnnotater {
             Path outputDir,
             Path traceFile,
             Path functionDatabaseFile,
-            String targetMethodName
+            String targetMethodName,
+            boolean strictRetracing
     ) throws IOException {
         KeySourceTransformer annotater = new KeySourceTransformer(targetMethodName);
         Files.createDirectories(outputDir.resolve(JAVA_SOURCE_DIR));
         annotater.transform(inputFile, outputDir.resolve(Path.of(JAVA_SOURCE_DIR, inputFile.getFileName().toString())));
 
-        KeyProofObligationCreator.createProofObligation(outputDir, annotater.getTracedMethod(), traceFile, functionDatabaseFile);
+        KeyProofObligationCreator.createProofObligation(outputDir, annotater.getTracedMethod(), traceFile, functionDatabaseFile, strictRetracing);
     }
 
 }

@@ -73,7 +73,6 @@ public class TraceRecordingTest {
 
         assertEquals(expectedTrace, actualTrace,
                 "Trace mismatch for test case: " + testName);
-
     }
 
     private static String getNormalizedTrace(Path traceFile) {

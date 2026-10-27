@@ -16,7 +16,8 @@ public class KeyProofObligationCreator {
             Path outputDir,
             MethodDeclaration tracedMethod,
             Path traceFile,
-            Path functionDatabaseFile
+            Path functionDatabaseFile,
+            boolean strictRetracing
     ) throws IOException {
 
         if (!traceFile.startsWith(outputDir)) {
@@ -36,6 +37,7 @@ public class KeyProofObligationCreator {
                 qualifiedClass, qualifiedClass, methodName, paramDescriptor);
 
         String keyFile = String.format(PROOF_OBLIGATION_TEMPLATE,
+                strictRetracing ? "on" : "off",
                 JAVA_SOURCE_DIR,
                 outputDir.relativize(traceFile),
                 outputDir.relativize(functionDatabaseFile),
@@ -80,7 +82,8 @@ public class KeyProofObligationCreator {
                      "sequences" : "sequences:on",
                      "wdChecks" : "wdChecks:off",
                      "wdOperator" : "wdOperator:L",
-                     "tracing": "tracing:on"
+                     "retracing": "retracing:on",
+                     "strictRetracing": "strictRetracing:%s",
                   },
                  "Labels" : {
                      "UseOriginLabels" : true
@@ -134,8 +137,8 @@ public class KeyProofObligationCreator {
             
              \\javaSource "%s";
             
-              \\traceFile "%s";
-              \\traceFunctionDB "%s";
+             \\traceFile "%s";
+             \\traceFunctionDB "%s";
             
              \\proofObligation
              // Proof-Obligation settings

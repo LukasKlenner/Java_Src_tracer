@@ -47,6 +47,7 @@ public class Main {
               --key-memory <size>  JVM heap for KeY (fuzz only; default: 8g)
               --start-method <name>  Start tracing from this method (default: main). Main method is not traced if this is not the default value.
               --no-implicit-exceptions  Skip implicit-exception recording (default: enabled)
+              --strictRetracing  Use strict retracing (default: false)
               --             Separator for program arguments (trace/annotate)
             """;
 
@@ -63,6 +64,7 @@ public class Main {
     public static final String DEFAULT_FUZZ_OUTPUT_DIR = "fuzz-out";
 
     public static final String DEFAULT_START_METHOD_NAME = "main";
+    public static final boolean DEFAULT_STRICT_RETRACING = false;
     public static final boolean DEFAULT_BINARY_TRACE = false;
 
     public static final int DEFAULT_FUZZ_DURATION = 15;
@@ -160,7 +162,7 @@ public class Main {
                 Files.writeString(traceFile, sw.toString());
             }
 
-            KeyAnnotater.annotate(args.input(), args.output(), traceFile, functionDatabaseFile, args.startMethodName());
+            KeyAnnotater.annotate(args.input(), args.output(), traceFile, functionDatabaseFile, args.startMethodName(), args.strictRetracing());
             System.out.println("Annotation complete.");
         } finally {
             deleteRecursive(tempDir);
@@ -172,6 +174,9 @@ public class Main {
     private static void fuzz(TraceArgs args) throws Exception {
         if (!args.implicitExceptions()) {
             throw new IllegalArgumentException("--no-implicit-exceptions is not supported for fuzz");
+        }
+        if (args.strictRetracing) {
+            throw new IllegalArgumentException("--strictRetracing is not supported for fuzz");
         }
         FuzzCommand.run(args);
     }
@@ -188,6 +193,7 @@ public class Main {
             String[] programArgs,
             Path inputSizesFile,
             String keyMemory,
+            boolean strictRetracing,
             boolean implicitExceptions
     ) {
     }
@@ -202,12 +208,14 @@ public class Main {
         String[] programArgs = new String[0];
         Path inputSizesFile = null;
         String keyMemory = DEFAULT_KEY_MEMORY;
+        boolean strictRetracing = DEFAULT_STRICT_RETRACING;
         boolean implicitExceptions = true;
 
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
                 case "--binary" -> binary = true;
                 case "--no-implicit-exceptions" -> implicitExceptions = false;
+                case "--strictRetracing" -> strictRetracing = true;
                 case "--start-method" -> {
                     if (i + 1 >= args.length) {
                         System.err.print(USAGE);
@@ -283,7 +291,7 @@ public class Main {
             };
         }
 
-        return new TraceArgs(input, output, binary, fuzzDuration, batchSize, startMethodName, programArgs, inputSizesFile, keyMemory, implicitExceptions);
+        return new TraceArgs(input, output, binary, fuzzDuration, batchSize, startMethodName, programArgs, inputSizesFile, keyMemory, strictRetracing, implicitExceptions);
     }
 
     // ---- shared helpers ----

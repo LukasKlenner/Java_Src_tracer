@@ -202,7 +202,7 @@ class FuzzCommand {
         Files.copy(traceFile, keyDir.resolve(traceFile.getFileName()));
         Files.copy(functionDbFile, keyDir.resolve(functionDbFile.getFileName()));
 
-        KeyAnnotater.annotate(originalInput, keyDir, keyDir.resolve(traceFile.getFileName()), keyDir.resolve(functionDbFile.getFileName()), FUZZ_TARGET_METHOD);
+        KeyAnnotater.annotate(originalInput, keyDir, keyDir.resolve(traceFile.getFileName()), keyDir.resolve(functionDbFile.getFileName()), FUZZ_TARGET_METHOD, false);
 
         return keyDir;
     }

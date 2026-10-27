@@ -61,6 +61,7 @@ public class KeYRetracingTest {
         try {
             Main.main(new String[]{
                     "annotate",
+                    "--strictRetracing",
                     "-o", tempDir.toAbsolutePath().toString(),
                     inputFile.toAbsolutePath().toString()
             });
