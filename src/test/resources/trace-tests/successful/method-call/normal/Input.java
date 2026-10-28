@@ -1,8 +1,7 @@
 class Input {
-    String value = "hello";
 
     int getLength() {
-        return value.length();
+        return 1;
     }
 
     public static void main(String[] args) {

@@ -11,7 +11,6 @@ import com.github.javaparser.ast.body.EnumDeclaration;
 import com.github.javaparser.ast.body.FieldDeclaration;
 import com.github.javaparser.ast.body.InitializerDeclaration;
 import com.github.javaparser.ast.body.Parameter;
-import com.github.javaparser.ast.body.RecordDeclaration;
 import com.github.javaparser.ast.body.VariableDeclarator;
 import com.github.javaparser.ast.comments.Comment;
 import com.github.javaparser.ast.expr.ArrayAccessExpr;
@@ -63,8 +62,8 @@ class SupportedFeatures {
     static final Feature[] SUPPORTED_FEATURES = {
 
             // Declarations
-            new Feature(ClassOrInterfaceDeclaration.class),
-            new Feature(RecordDeclaration.class),
+            // Key support is limited
+            new Feature("non-inner classes", ClassOrInterfaceDeclaration.class, c -> !c.isNestedType()),
             new Feature(CallableDeclaration.class),
             new Feature(FieldDeclaration.class),
             new Feature(VariableDeclarator.class),
@@ -118,7 +117,8 @@ class SupportedFeatures {
             new Feature(AssignExpr.class),
             new Feature(CastExpr.class),
             new Feature(InstanceOfExpr.class),
-            new Feature(FieldAccessExpr.class),
+            // key does not support super field accesses
+            new Feature("Non-super field accesses", FieldAccessExpr.class, f -> !(f.getScope() instanceof SuperExpr)),
 
             // array expressions
             new Feature("Array Creation with initializer or fully specified dimensions", ArrayCreationExpr.class, n -> n.getInitializer().isPresent() || n.getLevels().stream().allMatch(l -> l.getDimension().isPresent())),
