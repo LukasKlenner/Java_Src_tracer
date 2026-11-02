@@ -7,9 +7,9 @@ import com.github.javaparser.ast.body.Parameter;
 import com.github.javaparser.ast.body.TypeDeclaration;
 import com.github.javaparser.ast.body.VariableDeclarator;
 import com.github.javaparser.ast.expr.AssignExpr;
+import com.github.javaparser.ast.expr.BinaryExpr;
 import com.github.javaparser.ast.expr.CastExpr;
 import com.github.javaparser.ast.expr.ConditionalExpr;
-import com.github.javaparser.ast.expr.EnclosedExpr;
 import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.stmt.BlockStmt;
 import com.github.javaparser.ast.stmt.BreakStmt;
@@ -45,8 +45,10 @@ import static srctracer.util.JavaParserUtil.insertBefore;
 import static srctracer.util.JavaParserUtil.isBreakForSwitch;
 import static srctracer.util.JavaParserUtil.isInsideLambda;
 import static srctracer.util.JavaParserUtil.isNarrowPrimitive;
+import static srctracer.util.JavaParserUtil.isSimpleExpression;
 import static srctracer.util.JavaParserUtil.parseStatement;
 import static srctracer.util.JavaParserUtil.parseTracerCall;
+import static srctracer.util.JavaParserUtil.parseTracerCallExpr;
 import static srctracer.util.JavaParserUtil.parseTracerFieldAdd;
 import static srctracer.util.JavaParserUtil.resolvedToAstType;
 import static srctracer.util.JavaParserUtil.unwrapEnclosed;
@@ -55,6 +57,7 @@ import static srctracer.util.JavaParserUtil.wrapInSwitchExpression;
 public class InstrumenterVisitor extends AbstractInstrumenterVisitor {
 
     private final FunctionDatabaseWriter functionDatabaseWriter;
+    private final boolean implicitExceptions;
 
     private int nextFuncId = 1;
     private int nextSwitchId = 0;
@@ -63,12 +66,13 @@ public class InstrumenterVisitor extends AbstractInstrumenterVisitor {
     private final InstrumenterStats stats = new InstrumenterStats();
 
     public InstrumenterVisitor(FunctionDatabaseWriter functionDatabaseWriter) {
-        this(functionDatabaseWriter, null);
+        this(functionDatabaseWriter, null, true);
     }
 
-    public InstrumenterVisitor(FunctionDatabaseWriter functionDatabaseWriter, String lifecycleMethodName) {
+    public InstrumenterVisitor(FunctionDatabaseWriter functionDatabaseWriter, String lifecycleMethodName, boolean implicitExceptions) {
         super(lifecycleMethodName);
         this.functionDatabaseWriter = functionDatabaseWriter;
+        this.implicitExceptions = implicitExceptions;
     }
 
     // ---- Method entry ----
@@ -180,18 +184,19 @@ public class InstrumenterVisitor extends AbstractInstrumenterVisitor {
 
     @Override
     public Visitable visit(ConditionalExpr n, Void a) {
-        n.setCondition((Expression) n.getCondition().accept(this, a));
+        n.setCondition(parseTracerCallExpr(TracerMethod.COND, n.getCondition().accept(this, a)));
 
         Optional<Type> castType = computePreservationCast(n);
 
         Expression thenExpr = n.getThenExpr().clone();
         Expression elseExpr = n.getElseExpr().clone();
 
-        n.setThenExpr(wrapInSwitchExpression(thenExpr));
-        n.setElseExpr(wrapInSwitchExpression(elseExpr));
-
-        insertBefore(thenExpr.getParentNode().get(), parseTracerCall(TracerMethod.IF));
-        insertBefore(elseExpr.getParentNode().get(), parseTracerCall(TracerMethod.ELSE));
+        if (!isSimpleExpression(thenExpr)) {
+            n.setThenExpr(wrapInSwitchExpression(thenExpr));
+        }
+        if (!isSimpleExpression(elseExpr)) {
+            n.setElseExpr(wrapInSwitchExpression(elseExpr));
+        }
 
         thenExpr.accept(this, a);
         elseExpr.accept(this, a);
@@ -229,12 +234,34 @@ public class InstrumenterVisitor extends AbstractInstrumenterVisitor {
         if (parent instanceof VariableDeclarator vd)
             return Optional.of(vd.getType());
         if (parent instanceof AssignExpr ae) {
-            try { return Optional.of(resolvedToAstType(ae.getTarget().calculateResolvedType())); }
-            catch (RuntimeException ignored) {}
+            try {
+                return Optional.of(resolvedToAstType(ae.getTarget().calculateResolvedType()));
+            } catch (RuntimeException ignored) {
+            }
         }
         if (parent instanceof ReturnStmt)
             return n.findAncestor(MethodDeclaration.class).map(MethodDeclaration::getType);
         return Optional.empty();
+    }
+
+    // ---- Short Circuit ----
+
+    @Override
+    public Visitable visit(BinaryExpr n, Void a) {
+        super.visit(n, a);
+
+        if (implicitExceptions) {
+            // if implicit exceptions are recorded, short circuits are handled differently
+            return n;
+        }
+
+        if (n.getOperator() != BinaryExpr.Operator.AND && n.getOperator() != BinaryExpr.Operator.OR) {
+            return n;
+        }
+
+        n.setLeft(parseTracerCallExpr(TracerMethod.COND, wrapInSwitchExpression(n.getLeft())));
+        n.setRight(wrapInSwitchExpression(n.getRight()));
+        return n;
     }
 
     // ---- Return ----

@@ -34,13 +34,14 @@ import com.github.javaparser.ast.type.ArrayType;
 import com.github.javaparser.ast.type.ClassOrInterfaceType;
 import com.github.javaparser.ast.type.PrimitiveType;
 import com.github.javaparser.ast.type.Type;
-import com.github.javaparser.resolution.types.ResolvedPrimitiveType;
 import com.github.javaparser.resolution.types.ResolvedType;
 import srctracer.trace.TracerField;
 import srctracer.trace.TracerMethod;
 
 import java.util.Optional;
 import java.util.stream.Collectors;
+
+import static com.github.javaparser.StaticJavaParser.parseExpression;
 
 public class JavaParserUtil {
 
@@ -124,6 +125,10 @@ public class JavaParserUtil {
 
     public static Statement parseTracerCall(TracerMethod method, Object... args) {
         return parseStatement(method.getMethodCallString(args) + ";");
+    }
+
+    public static Expression parseTracerCallExpr(TracerMethod method, Object... args) {
+        return parseExpression(method.getMethodCallString(args));
     }
 
     public static Statement parseTracerFieldStore(TracerField field, Object value) {

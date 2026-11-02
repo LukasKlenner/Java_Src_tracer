@@ -7,7 +7,7 @@ public enum TracerMethod {
     ELSE("_ELSE", 0),
     LOOP_BODY("_LOOP_BODY", 0),
     LOOP_END("_LOOP_END", 0),
-    COND("_COND", 0),
+    COND("_COND", 1),
     BREAK("_BREAK", 0),
     RETURN("_RETURN", 0),
     CASE("_CASE", 1),

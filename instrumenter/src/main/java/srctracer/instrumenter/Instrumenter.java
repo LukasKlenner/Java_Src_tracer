@@ -91,7 +91,7 @@ public class Instrumenter extends SourceTransformer {
         // TODO clenaup als visitor?
         extractFieldInitializers(cu);
 
-        InstrumenterVisitor v = new InstrumenterVisitor(functionDatabaseWriter, lifecycleMethodName);
+        InstrumenterVisitor v = new InstrumenterVisitor(functionDatabaseWriter, lifecycleMethodName, implicitExceptions);
         cu.accept(v, null);
         if (implicitExceptions) {
             cu.accept(new ImplicitExceptionVisitor(lifecycleMethodName), null);
