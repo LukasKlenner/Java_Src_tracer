@@ -45,6 +45,8 @@ public class Instrumenter extends SourceTransformer {
     private final FunctionDatabaseWriter functionDatabaseWriter;
     private final String lifecycleMethodName;
     private final boolean implicitExceptions;
+    // shared by all files transformed with this instance, so they can use one function database
+    private int nextFuncId = 1;
 
     public Instrumenter(FunctionDatabaseWriter functionDatabaseWriter, List<Path> sourceRoots, List<Path> jars, String lifecycleMethodName) throws IOException {
         this(functionDatabaseWriter, sourceRoots, jars, lifecycleMethodName, true);
@@ -91,8 +93,9 @@ public class Instrumenter extends SourceTransformer {
         // TODO clenaup als visitor?
         extractFieldInitializers(cu);
 
-        InstrumenterVisitor v = new InstrumenterVisitor(functionDatabaseWriter, lifecycleMethodName, implicitExceptions);
+        InstrumenterVisitor v = new InstrumenterVisitor(functionDatabaseWriter, lifecycleMethodName, implicitExceptions, nextFuncId);
         cu.accept(v, null);
+        nextFuncId = v.getNextFuncId();
         if (implicitExceptions) {
             cu.accept(new ImplicitExceptionVisitor(lifecycleMethodName), null);
         }

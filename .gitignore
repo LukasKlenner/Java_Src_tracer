@@ -8,5 +8,5 @@ instrument-out/
 *.iml
 .vscode/
 fuzz-out/
-tools/jazzer/
-tools/key/
+tools/*
+evaluation/mutation-out/

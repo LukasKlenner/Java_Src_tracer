@@ -63,6 +63,14 @@ public class JavaParserUtil {
         return true; // Reference type without null case needs a null check
     }
 
+    /** Whether the method is preceded by a JML contract comment ({@code /*@ ... @*}{@code /}). */
+    public static boolean hasJmlContract(MethodDeclaration md) {
+        return md.getComment()
+                .filter(c -> c.isBlockComment() || c.isJavadocComment())
+                .map(c -> c.getContent().startsWith("@"))
+                .orElse(false);
+    }
+
     public static boolean isMainMethod(MethodDeclaration md) {
         if (!md.getNameAsString().equals("main")) return false;
         if (!md.isStatic()) return false;

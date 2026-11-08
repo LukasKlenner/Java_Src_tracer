@@ -39,7 +39,22 @@ public final class Trace {
     private static int ieByte = IE_INIT;
     private static boolean breakBefore = false;
 
+    // Invocations of the start (lifecycle) method that have not returned yet. Only the first invocation is
+    // recorded: its recursive calls do not end the trace, and later invocations record nothing.
+    private static int lifecycleDepth = 0;
+    private static boolean lifecycleEntered = false;
+    // whether the recorded invocation of the start method threw (then it has no U)
+    private static boolean lifecycleThrew = false;
+    // output that recording starts with once the start method is entered (see trace_start_on_entry)
+    private static OutputStream pendingOut;
+
     private static OutputStream out;
+    // events recorded since recording started (the end marker is not counted)
+    private static long eventCount = 0;
+
+    private static void countEvent() {
+        if (out != null) eventCount++;
+    }
 
     // ---- low-level byte buffer ----
 
@@ -76,12 +91,14 @@ public final class Trace {
     }
 
     public static void _IF() {
+        countEvent();
         // rotate left by 1
         ieByte = ((ieByte << 1) | (ieByte >>> 7)) & 0xFF;
         prepareNext();
     }
 
     public static void _ELSE() {
+        countEvent();
         ieByte = (ieByte << 1) & 0xFF;
         prepareNext();
     }
@@ -115,6 +132,7 @@ public final class Trace {
     // ---- function entry (variable-length, big-endian) ----
 
     public static void _FUNC(int num) {
+        countEvent();
         ieFinish();
         if (num == 0) {
             putByte(FUNC_ANON);
@@ -144,21 +162,25 @@ public final class Trace {
     // ---- element markers ----
 
     public static void _RETURN() {
+        countEvent();
         ieFinish();
         putByte(RETURN);
     }
 
     public static void _TRY() {
+        countEvent();
         ieFinish();
         putByte(TRY);
     }
 
     /** No-op in binary mode (matches C #else branch in trace_mode.h). */
     public static void _TRY_END() {
-        // intentionally empty
+        // intentionally empty, but counted like the text runtime's U
+        countEvent();
     }
 
     public static void _CATCH(int idx) {
+        countEvent();
         ieFinish();
         // NUM_16: type byte (CATCH | LEN_16), then 2 bytes little-endian
         putByte(CATCH_T | LEN_16);
@@ -172,17 +194,52 @@ public final class Trace {
      * which is exactly the C version's behavior for 6-bit cases.
      */
     public static void _CASE(int caseId) {
+        countEvent();
         ieFinish();
         putByte(0x80 | (caseId & 0x3F));
+    }
+
+    // try/catch the instrumenter wraps around the start method; only recorded for its outermost invocation.
+    // _LIFECYCLE_TRY_END is called in the finally block, so it is skipped if the method threw.
+    public static void _LIFECYCLE_TRY()     { if (lifecycleDepth == 1) _TRY(); }
+    public static void _LIFECYCLE_TRY_END() { if (lifecycleDepth == 1 && !lifecycleThrew) _TRY_END(); }
+    public static void _LIFECYCLE_CATCH(long catchIndex) {
+        if (lifecycleDepth == 1) {
+            lifecycleThrew = true;
+            _CATCH((int) catchIndex);
+        }
     }
 
     // ---- file lifecycle ----
 
     public static void trace_start(OutputStream stream) {
         out = stream;
+        eventCount = 0;
     }
 
+    /**
+     * Records into {@code stream}, but only from the first entry of the start method on: code that runs before
+     * (e.g. an uninstrumented fuzz harness calling other instrumented methods first) is not recorded.
+     */
+    public static void trace_start_on_entry(OutputStream stream) {
+        pendingOut = stream;
+    }
+
+    /** Called on entry of the start method. */
     public static void trace_start(String programName) {
+        lifecycleDepth++;
+        if (lifecycleDepth > 1 || lifecycleEntered) return;
+        lifecycleEntered = true;
+        if (pendingOut != null) {
+            // forget the state left by instrumented code that ran before (it was not recorded)
+            breakBefore = false;
+            ieByte = IE_INIT;
+            bufPos = 0;
+            eventCount = 0;
+            out = pendingOut;
+            pendingOut = null;
+            return;
+        }
         if (out != null) return;
 
         LocalDateTime now = LocalDateTime.now();
@@ -200,7 +257,9 @@ public final class Trace {
         Runtime.getRuntime().addShutdownHook(new Thread(Trace::trace_end));
     }
 
+    /** Called when the start method returns (and by the tool / shutdown hook after the run). */
     public static void trace_end() {
+        if (lifecycleDepth > 0 && --lifecycleDepth > 0) return; // return of a recursive call
         ieFinish();
         putByte(END);
         flush();
@@ -212,5 +271,18 @@ public final class Trace {
         } catch (Exception e) {
             // swallow
         }
+    }
+
+    /**
+     * Number of events recorded so far: branch decisions, calls, returns, try/try-end/catch markers and switch
+     * cases (a switch case counts once). The same count as the text runtime.
+     */
+    public static long trace_event_count() {
+        return eventCount;
+    }
+
+    /** Whether the start method was entered, i.e. whether a trace was recorded. */
+    public static boolean trace_recorded() {
+        return lifecycleEntered;
     }
 }

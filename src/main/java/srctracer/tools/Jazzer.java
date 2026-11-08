@@ -2,6 +2,7 @@ package srctracer.tools;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 
 import static srctracer.tools.ToolsUtils.findProjectRoot;
@@ -18,16 +19,28 @@ public class Jazzer {
             int durationSeconds,
             Path outputDir
     ) throws Exception {
+        return startJazzerAsync(className, classDir, corpusDir, durationSeconds, outputDir, false, List.of());
+    }
+
+    public static Process startJazzerAsync(
+            String className,
+            Path classDir,
+            Path corpusDir,
+            int durationSeconds,
+            Path outputDir,
+            boolean stopOnFirstFinding,
+            List<String> extraArgs
+    ) throws Exception {
         Path jazzer = resolveJazzer();
 
-        List<String> command = List.of(
+        List<String> command = new ArrayList<>(List.of(
                 jazzer.toAbsolutePath().toString(),
                 "--cp=" + classDir.toAbsolutePath(),
                 "--target_class=" + className,
-                "--keep_going=0",
-                String.format("-max_total_time=%d", durationSeconds),
-                corpusDir.toAbsolutePath().toString()
-        );
+                String.format("-max_total_time=%d", durationSeconds)
+        ));
+        command.addAll(extraArgs);
+        command.add(corpusDir.toAbsolutePath().toString());
 
         Path jazzerLog = outputDir.resolve("jazzer.log");
 

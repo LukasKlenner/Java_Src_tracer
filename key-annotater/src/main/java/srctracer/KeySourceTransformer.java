@@ -12,6 +12,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Arrays;
 
+import static srctracer.util.JavaParserUtil.hasJmlContract;
 import static srctracer.util.JavaParserUtil.isMainMethod;
 
 public class KeySourceTransformer extends SourceTransformer {
@@ -61,6 +62,17 @@ public class KeySourceTransformer extends SourceTransformer {
 
             tracedMethod = md;
 
+            // a user-written contract is the bug specification and is verified as it is
+            if (hasJmlContract(md)) {
+                String contract = md.getComment().get().getContent();
+                if (!contract.contains("normal_behavior") && !contract.contains("normal_behaviour")) {
+                    throw new IllegalArgumentException("The JML contract of " + md.getNameAsString()
+                            + " must be a normal_behavior contract (the proof obligation verifies it)");
+                }
+                return;
+            }
+
+            // no contract: only verify that the method terminates normally (no uncaught exception)
             JmlJavadocCommentBuilder builder = new JmlJavadocCommentBuilder();
             builder.setIsNormalBehaviour(true);
 

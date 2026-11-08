@@ -59,7 +59,7 @@ public class InstrumenterVisitor extends AbstractInstrumenterVisitor {
     private final FunctionDatabaseWriter functionDatabaseWriter;
     private final boolean implicitExceptions;
 
-    private int nextFuncId = 1;
+    private int nextFuncId;
     private int nextSwitchId = 0;
     private int nextTmpId = 0;
 
@@ -70,9 +70,19 @@ public class InstrumenterVisitor extends AbstractInstrumenterVisitor {
     }
 
     public InstrumenterVisitor(FunctionDatabaseWriter functionDatabaseWriter, String lifecycleMethodName, boolean implicitExceptions) {
+        this(functionDatabaseWriter, lifecycleMethodName, implicitExceptions, 1);
+    }
+
+    /**
+     * @param firstFuncId id of the first function instrumented by this visitor; when several files share one
+     *                    function database, continue with {@link #getNextFuncId()} of the previous file
+     */
+    public InstrumenterVisitor(FunctionDatabaseWriter functionDatabaseWriter, String lifecycleMethodName, boolean implicitExceptions,
+                               int firstFuncId) {
         super(lifecycleMethodName);
         this.functionDatabaseWriter = functionDatabaseWriter;
         this.implicitExceptions = implicitExceptions;
+        this.nextFuncId = firstFuncId;
     }
 
     // ---- Method entry ----
@@ -109,25 +119,30 @@ public class InstrumenterVisitor extends AbstractInstrumenterVisitor {
     /**
      * Replaces the lifecycle method body with:
      * trace_start("<ClassName>");
-     * try { _TRY(); _FUNC(id); <original statements...> }
-     * catch (Throwable e) { _CATCH(...); throw e; }
-     * finally { trace_end(); }
+     * try { _LIFECYCLE_TRY(); _FUNC(id); <original statements...> }
+     * catch (Throwable e) { _LIFECYCLE_CATCH(...); throw e; }
+     * finally { _LIFECYCLE_TRY_END(); trace_end(); }
+     * <p>
+     * The try markers are needed for KeY retrace only (the original source has no outer try): the proof obligation
+     * wraps the call of the traced method in a try-catch, which is closed by the U of _LIFECYCLE_TRY_END.
+     * _LIFECYCLE_TRY_END is in the finally block, so it is also reached when the method ends with a return
+     * statement; the runtime skips it if the method threw (_LIFECYCLE_CATCH was called).
+     * <p>
+     * The runtime only records the first invocation of the lifecycle method; recursive calls of it are recorded
+     * like any other call, so the _LIFECYCLE_* markers are only written for the outermost invocation.
      */
     private void wrapMainWithLifecycle(MethodDeclaration md) {
         BlockStmt original = md.getBody().get();
         String name = enclosingTypeName(md);
 
         BlockStmt tryBlock = new BlockStmt();
-        // The _TRY and _TRY_END markers here are needed for KeY retrace only — the original source has no outer try.
-        tryBlock.addStatement(parseTracerCall(TracerMethod.TRY));
+        tryBlock.addStatement(parseTracerCall(TracerMethod.LIFECYCLE_TRY));
         for (Statement s : original.getStatements()) {
             tryBlock.addStatement(s.clone());
         }
-        if (!alwaysExits(tryBlock)) {
-            tryBlock.addStatement(parseTracerCall(TracerMethod.TRY_END));
-        }
 
         BlockStmt finallyBlock = new BlockStmt();
+        finallyBlock.addStatement(parseTracerCall(TracerMethod.LIFECYCLE_TRY_END));
         finallyBlock.addStatement(parseTracerCall(TracerMethod.TRACE_END));
 
         TryStmt tryStmt = new TryStmt();
@@ -137,7 +152,7 @@ public class InstrumenterVisitor extends AbstractInstrumenterVisitor {
         CatchClause catchClause = new CatchClause();
         catchClause.setParameter(new Parameter(parseType("java.lang.Throwable"), MAIN_LIFECYCLE_CATCH_PARAM));
         BlockStmt catchBody = new BlockStmt();
-        catchBody.addStatement(parseTracerCall(TracerMethod.CATCH, TracerField.TOTAL_CATCH_COUNT.getFieldAccessString()));
+        catchBody.addStatement(parseTracerCall(TracerMethod.LIFECYCLE_CATCH, TracerField.TOTAL_CATCH_COUNT.getFieldAccessString()));
         catchBody.addStatement(parseStatement("throw " + MAIN_LIFECYCLE_CATCH_PARAM + ";"));
         catchClause.setBody(catchBody);
         tryStmt.setCatchClauses(new NodeList<>(catchClause));
@@ -415,6 +430,10 @@ public class InstrumenterVisitor extends AbstractInstrumenterVisitor {
 
     public InstrumenterStats getStats() {
         return stats;
+    }
+
+    public int getNextFuncId() {
+        return nextFuncId;
     }
 
     // ---- Helpers ----

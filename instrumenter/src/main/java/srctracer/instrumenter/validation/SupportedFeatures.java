@@ -39,6 +39,7 @@ import com.github.javaparser.ast.stmt.BreakStmt;
 import com.github.javaparser.ast.stmt.CatchClause;
 import com.github.javaparser.ast.stmt.ContinueStmt;
 import com.github.javaparser.ast.stmt.DoStmt;
+import com.github.javaparser.ast.stmt.EmptyStmt;
 import com.github.javaparser.ast.stmt.ExplicitConstructorInvocationStmt;
 import com.github.javaparser.ast.stmt.ExpressionStmt;
 import com.github.javaparser.ast.stmt.ForEachStmt;
@@ -80,6 +81,7 @@ class SupportedFeatures {
             new Feature(Modifier.class),
             new Feature(Parameter.class),
             new Feature(Comment.class),
+            new Feature(EmptyStmt.class),
 
             // Method calls
             new Feature(MethodCallExpr.class),
