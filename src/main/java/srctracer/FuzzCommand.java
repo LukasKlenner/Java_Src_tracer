@@ -1,9 +1,7 @@
 package srctracer;
 
 import srctracer.tools.Jazzer;
-import srctracer.tools.KeY;
 
-import java.io.BufferedWriter;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -24,41 +22,60 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.FutureTask;
-import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicInteger;
 
 class FuzzCommand {
 
     static final String FUZZ_TARGET_METHOD = "fuzzerTestOneInput";
 
-    static final String KEY_RESULTS_FILE = "key-results.csv";
-
-    /** key-results.csv status of a corpus entry that does not call the traced method (nothing to verify). */
-    static final String NOT_REACHED = "not_reached";
-
-    static final String REPLAY_RESULTS_FILE = "replay-results.csv";
-
-    /** File in a KeY input directory with the number of events of its trace (written for key-results.csv). */
-    private static final String TRACE_EVENTS_FILE = "trace-events.txt";
-
     /** Per-input timeout of a --corpus replay without --jazzer-timeout (libFuzzer's default). */
     private static final int DEFAULT_REPLAY_TIMEOUT_SECONDS = 1200;
 
-    static void run(Main.TraceArgs args) throws Exception {
+    /**
+     * The method that is traced and verified with KeY, and the files that are traced and passed to KeY.
+     * By default this is the one method outside the harness with a JML contract (--start-method overrides this).
+     * If the method is not declared in the harness file, the harness is neither instrumented nor given to KeY,
+     * so the path class is defined over the arguments of the method and the harness may use any Java code.
+     */
+    record TraceTarget(String methodName, ProgramSources sources) {
+    }
 
-        Path runtimeJar = Main.resolveRuntimeJar(args.binary());
-        String className = args.sources().entryClassName();
+    private final Main.TraceArgs args;
+    private final Path runtimeJar;
+    private final String className;
+    private final Path functionDbFile;
+    private final Path corpusDir;
+    private final Path tracesDir;
+    private final Path keyInputsDir;
+
+    // only set if the corpus entries are verified with KeY
+    private TraceTarget target;
+    private Path instrumentedCompileDir;
+    private KeyResultsWriter keyResults;
+    private KeyRunner keyRunner;
+
+    // only set if the harness is run uninstrumented (Jazzer or --corpus replay)
+    private Path fuzzerCompileDir;
+
+    private FuzzCommand(Main.TraceArgs args) {
+        this.args = args;
+        this.runtimeJar = Main.resolveRuntimeJar(args.binary());
+        this.className = args.sources().entryClassName();
+        this.functionDbFile = args.output().resolve(Main.DEFAULT_FUNCTION_DB_NAME);
+        this.corpusDir = args.output().resolve("corpus");
+        this.tracesDir = args.output().resolve("traces");
+        this.keyInputsDir = args.output().resolve("key-inputs");
+    }
+
+    static void run(Main.TraceArgs args) throws Exception {
+        new FuzzCommand(args).run();
+    }
+
+    private void run() throws Exception {
         boolean verifyWithKey = args.inputSizesFile() != null || args.oracle().verifyWithKey();
 
-        Path functionDbFile = args.output().resolve(Main.DEFAULT_FUNCTION_DB_NAME);
-        Path instrumentedCompileDir = null;
-        TraceTarget target = null;
         if (verifyWithKey) {
             target = traceTarget(args);
             System.out.println("Tracing and verifying " + target.methodName() + " (files: "
@@ -73,7 +90,6 @@ class FuzzCommand {
             Main.compile(compiled, instrumentedCompileDir, runtimeJar);
         }
 
-        Path fuzzerCompileDir = null;
         if (args.inputSizesFile() == null) {
             ProgramSources fuzzerSources = args.oracle().fuzzAssertVariant()
                     ? args.sources().withAssertVariant()
@@ -82,32 +98,22 @@ class FuzzCommand {
             Main.compile(Main.readAll(fuzzerSources), fuzzerCompileDir, runtimeJar);
         }
 
-        Path corpusDir = args.output().resolve("corpus");
         Files.createDirectories(corpusDir);
-
-        Path tracesDir = args.output().resolve("traces");
-        Path keyInputsDir = args.output().resolve("key-inputs");
-        KeyResultsWriter keyResults = null;
-        KeyRunner keyRunner = null;
         if (verifyWithKey) {
             Files.createDirectories(tracesDir);
             Files.createDirectories(keyInputsDir);
-            keyResults = new KeyResultsWriter(args.output().resolve(KEY_RESULTS_FILE));
+            keyResults = new KeyResultsWriter(args.output().resolve(KeyResultsWriter.FILE_NAME));
             keyRunner = new KeyRunner(args, keyResults);
         }
 
-        int[] result;
-
+        int inputCount;
         try {
             if (args.inputSizesFile() != null) {
-                result = runWithInputSizes(args, className, target, instrumentedCompileDir, runtimeJar,
-                        corpusDir, tracesDir, keyInputsDir, functionDbFile, keyResults, keyRunner);
+                inputCount = runWithInputSizes();
             } else if (args.replayCorpus() != null) {
-                result = runWithCorpus(args, className, target, fuzzerCompileDir, instrumentedCompileDir, runtimeJar,
-                        corpusDir, tracesDir, keyInputsDir, functionDbFile, keyResults, keyRunner);
+                inputCount = runWithCorpus();
             } else {
-                result = runWithJazzer(args, className, target, fuzzerCompileDir, instrumentedCompileDir, runtimeJar,
-                        corpusDir, tracesDir, keyInputsDir, functionDbFile, keyResults, keyRunner);
+                inputCount = runWithJazzer();
             }
         } finally {
             if (keyRunner != null) keyRunner.close();
@@ -117,17 +123,8 @@ class FuzzCommand {
         if (fuzzerCompileDir != null) Main.deleteRecursive(fuzzerCompileDir);
         if (instrumentedCompileDir != null) Main.deleteRecursive(instrumentedCompileDir);
 
-        int inputCount = result[0], bugsFound = result[1];
-        System.out.println("Complete. Processed " + inputCount + " inputs, " + bugsFound + " potential bug(s) found. Output in: " + args.output());
-    }
-
-    /**
-     * The method that is traced and verified with KeY, and the files that are traced and passed to KeY.
-     * By default this is the one method outside the harness with a JML contract (--start-method overrides this).
-     * If the method is not declared in the harness file, the harness is neither instrumented nor given to KeY,
-     * so the path class is defined over the arguments of the method and the harness may use any Java code.
-     */
-    record TraceTarget(String methodName, ProgramSources sources) {
+        System.out.println("Complete. Processed " + inputCount + " inputs, " + bugsFound()
+                + " potential bug(s) found. Output in: " + args.output());
     }
 
     private static TraceTarget traceTarget(Main.TraceArgs args) {
@@ -141,11 +138,25 @@ class FuzzCommand {
         return new TraceTarget(methodName, traced);
     }
 
-    private static int[] runWithInputSizes(
-            Main.TraceArgs args, String className, TraceTarget target, Path instrumentedCompileDir, Path runtimeJar,
-            Path corpusDir, Path tracesDir, Path keyInputsDir, Path functionDbFile, KeyResultsWriter keyResults,
-            KeyRunner keyRunner
-    ) throws Exception {
+    private int bugsFound() {
+        return keyRunner == null ? 0 : keyRunner.bugsFound();
+    }
+
+    private boolean stoppedOnBug() {
+        return keyRunner != null && keyRunner.stoppedOnBug();
+    }
+
+    /** Waits for the submitted KeY proofs, or cancels them if {@code stop} is set or KeY stopped on a bug. */
+    private void finishProofs(boolean stop) throws InterruptedException {
+        if (keyRunner == null) return;
+        if (stop || keyRunner.stoppedOnBug()) {
+            keyRunner.stop();
+        } else {
+            keyRunner.awaitAll();
+        }
+    }
+
+    private int runWithInputSizes() throws Exception {
         String content = Files.readString(args.inputSizesFile()).trim();
         String[] parts = content.split(",");
         int[] sizes = new int[parts.length];
@@ -163,25 +174,14 @@ class FuzzCommand {
 
             Path inputFile = corpusDir.resolve("input-" + size);
             Files.write(inputFile, inputBytes);
-
-            Path keyDir = prepareCorpusEntry(inputFile, className, target, instrumentedCompileDir, runtimeJar,
-                    args.binary(), tracesDir, keyInputsDir, functionDbFile);
-            if (keyDir == null) {
-                keyResults.write(inputFile.getFileName().toString(), NOT_REACHED, null);
-                continue;
-            }
-            keyRunner.submit(keyDir);
+            processEntry(inputFile);
         }
-        keyRunner.awaitAll();
+        finishProofs(false);
 
-        return new int[]{sizes.length, keyRunner.bugsFound()};
+        return sizes.length;
     }
 
-    private static int[] runWithJazzer(
-            Main.TraceArgs args, String className, TraceTarget target, Path fuzzerCompileDir, Path instrumentedCompileDir,
-            Path runtimeJar, Path corpusDir, Path tracesDir, Path keyInputsDir, Path functionDbFile,
-            KeyResultsWriter keyResults, KeyRunner keyRunner
-    ) throws Exception {
+    private int runWithJazzer() throws Exception {
         List<String> jazzerArgs = new ArrayList<>();
         if (args.fuzzSeed() != null) jazzerArgs.add("-seed=" + args.fuzzSeed());
         if (args.jazzerTimeout() != null) jazzerArgs.add("-timeout=" + args.jazzerTimeout());
@@ -203,7 +203,7 @@ class FuzzCommand {
             // the KeY proofs run in the background (keyRunner), so new corpus entries are prepared while proving
             boolean changed = args.oracle().verifyWithKey();
             boolean jazzerFinding = false;
-            while ((jazzerProcess.isAlive() || changed) && !(args.stopOnBug() && keyRunner != null && keyRunner.bugsFound() > 0)) {
+            while ((jazzerProcess.isAlive() || changed) && !stoppedOnBug()) {
                 changed = false;
 
                 if (args.stopOnBug() && !jazzerProcess.isAlive() && hasJazzerFinding(args.output())) {
@@ -214,37 +214,16 @@ class FuzzCommand {
 
                 Thread.sleep(500);
 
-                List<Path> newFiles = findNewCorpusEntries(corpusDir, processedFiles);
-
-                for (Path entry : newFiles) {
+                for (Path entry : findNewCorpusEntries(corpusDir, processedFiles)) {
                     if (!Files.exists(entry)) continue;
 
                     processedFiles.add(entry);
                     changed = true;
-                    try {
-                        Path keyDir = prepareCorpusEntry(
-                                entry, className, target, instrumentedCompileDir, runtimeJar,
-                                args.binary(), tracesDir, keyInputsDir, functionDbFile);
-                        if (keyDir == null) {
-                            keyResults.write(entry.getFileName().toString(), NOT_REACHED, null);
-                        } else {
-                            keyRunner.submit(keyDir);
-                        }
-                    } catch (Exception e) {
-                        // e.g. libFuzzer removed the entry while it was being read
-                        System.out.println("  Could not prepare corpus entry " + entry.getFileName() + ": " + e);
-                        keyResults.write(entry.getFileName().toString(), "prepare_error", null);
-                    }
+                    processEntry(entry);
                 }
             }
 
-            if (keyRunner != null) {
-                if (jazzerFinding || args.stopOnBug() && keyRunner.bugsFound() > 0) {
-                    keyRunner.stop();
-                } else {
-                    keyRunner.awaitAll();
-                }
-            }
+            finishProofs(jazzerFinding);
         } finally {
             if (jazzerProcess.isAlive()) {
                 System.out.println("Stopping Jazzer ...");
@@ -256,7 +235,7 @@ class FuzzCommand {
         int exitCode = jazzerProcess.exitValue();
         System.out.println("Jazzer exited with code " + exitCode + " (log: " + args.output().resolve("jazzer.log") + ")");
 
-        return new int[]{processedFiles.size(), keyRunner == null ? 0 : keyRunner.bugsFound()};
+        return processedFiles.size();
     }
 
     /**
@@ -267,11 +246,7 @@ class FuzzCommand {
      * An entry that exceeds the per-input timeout stops the replay, like Jazzer stops at its first timeout; the
      * remaining entries are neither replayed nor verified.
      */
-    private static int[] runWithCorpus(
-            Main.TraceArgs args, String className, TraceTarget target, Path fuzzerCompileDir, Path instrumentedCompileDir,
-            Path runtimeJar, Path corpusDir, Path tracesDir, Path keyInputsDir, Path functionDbFile,
-            KeyResultsWriter keyResults, KeyRunner keyRunner
-    ) throws Exception {
+    private int runWithCorpus() throws Exception {
         List<Path> entries = new ArrayList<>();
         try (DirectoryStream<Path> stream = Files.newDirectoryStream(args.replayCorpus())) {
             for (Path entry : stream) {
@@ -292,16 +267,16 @@ class FuzzCommand {
                 + " (oracle: " + args.oracle().cliName() + ", timeout per input: " + timeoutSeconds + "s) ...");
 
         int processed = 0, failures = 0;
-        try (ReplayResultsWriter replayResults = new ReplayResultsWriter(args.output().resolve(REPLAY_RESULTS_FILE))) {
+        try (ReplayResultsWriter replayResults = new ReplayResultsWriter(args.output().resolve(ReplayResultsWriter.FILE_NAME))) {
             for (Path source : entries) {
-                if (args.stopOnBug() && keyRunner != null && keyRunner.bugsFound() > 0) break;
+                if (stoppedOnBug()) break;
 
                 Path entry = corpusDir.resolve(source.getFileName());
                 Files.copy(source, entry, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.COPY_ATTRIBUTES);
                 String entryName = entry.getFileName().toString();
 
                 long startMillis = System.currentTimeMillis();
-                ReplayOutcome outcome = replay(entry, className, fuzzerCompileDir, runtimeJar, timeoutSeconds);
+                ReplayOutcome outcome = replay(entry, timeoutSeconds);
                 replayResults.write(processed, entryName, outcome, System.currentTimeMillis() - startMillis);
                 processed++;
                 if (!outcome.ok()) {
@@ -314,55 +289,22 @@ class FuzzCommand {
                     break;
                 }
 
-                if (keyRunner == null) continue;
-                try {
-                    Path keyDir = prepareCorpusEntry(entry, className, target, instrumentedCompileDir, runtimeJar,
-                            args.binary(), tracesDir, keyInputsDir, functionDbFile);
-                    if (keyDir == null) {
-                        keyResults.write(entryName, NOT_REACHED, null);
-                    } else {
-                        keyRunner.submit(keyDir);
-                    }
-                } catch (Exception e) {
-                    System.out.println("  Could not prepare corpus entry " + entryName + ": " + e);
-                    keyResults.write(entryName, "prepare_error", null);
-                }
+                if (keyRunner != null) processEntry(entry);
             }
         }
         System.out.println(failures + " of " + processed + " replayed entries fail on the concrete run");
 
-        if (keyRunner != null) {
-            if (args.stopOnBug() && keyRunner.bugsFound() > 0) {
-                keyRunner.stop();
-            } else {
-                keyRunner.awaitAll();
-            }
-        }
-        return new int[]{processed, keyRunner == null ? 0 : keyRunner.bugsFound()};
-    }
-
-    /**
-     * Outcome of running the uninstrumented harness on one corpus entry: {@code ok}, {@code exception} (with the
-     * class name; {@link AssertionError} for a failed runtime assert) or {@code timeout}.
-     */
-    record ReplayOutcome(String status, String exception) {
-        static final String OK = "ok";
-        static final String EXCEPTION = "exception";
-        static final String TIMEOUT = "timeout";
-
-        boolean ok() {
-            return status.equals(OK);
-        }
+        finishProofs(false);
+        return processed;
     }
 
     /**
      * Runs fuzzerTestOneInput of the uninstrumented harness on the entry in a fresh class loader. The run happens on a
      * daemon thread; after the timeout it is abandoned (it cannot be killed and keeps running until the JVM exits).
      */
-    private static ReplayOutcome replay(Path corpusEntry, String className, Path classDir, Path runtimeJar,
-                                        int timeoutSeconds) throws Exception {
+    private ReplayOutcome replay(Path corpusEntry, int timeoutSeconds) throws Exception {
         byte[] inputBytes = Files.readAllBytes(corpusEntry);
-        URLClassLoader cl = Main.createClassLoader(classDir, runtimeJar);
+        URLClassLoader cl = Main.createClassLoader(fuzzerCompileDir, runtimeJar);
         // Jazzer runs the harness with assertions enabled (runtime oracle)
         cl.setDefaultAssertionStatus(true);
         FutureTask<ReplayOutcome> task = new FutureTask<>(() -> {
@@ -388,34 +330,45 @@ class FuzzCommand {
     }
 
     /**
+     * Traces the corpus entry and submits its proof to KeY. If the entry does not reach the traced method or cannot
+     * be prepared, this is written to key-results.csv instead.
+     */
+    private void processEntry(Path entry) throws IOException {
+        String entryName = entry.getFileName().toString();
+        Path keyDir;
+        try {
+            keyDir = prepareCorpusEntry(entry);
+        } catch (Exception e) {
+            // e.g. libFuzzer removed the entry while it was being read
+            System.out.println("  Could not prepare corpus entry " + entryName + ": " + e);
+            keyResults.write(entryName, KeyResultsWriter.PREPARE_ERROR, null);
+            return;
+        }
+        if (keyDir == null) {
+            keyResults.write(entryName, KeyResultsWriter.NOT_REACHED, null);
+        } else {
+            keyRunner.submit(keyDir);
+        }
+    }
+
+    /**
      * Runs the harness on the corpus entry, records the trace of the first invocation of the traced method and
      * creates the KeY input directory. Returns null if the input does not reach the traced method.
      */
-    private static Path prepareCorpusEntry(
-            Path corpusEntry,
-            String className,
-            TraceTarget target,
-            Path instrumentedClassDir,
-            Path runtimeJar,
-            boolean binary,
-            Path tracesDir,
-            Path keyInputsDir,
-            Path functionDbFile
-    ) throws Exception {
+    private Path prepareCorpusEntry(Path corpusEntry) throws Exception {
         byte[] inputBytes = Files.readAllBytes(corpusEntry);
         String corpusEntryName = corpusEntry.getFileName().toString();
 
         System.out.println("Preparing corpus entry " + corpusEntryName + " with " + inputBytes.length + " bytes ...");
 
         Path traceFile;
-        long traceEvents;
-        try (URLClassLoader cl = Main.createClassLoader(instrumentedClassDir, runtimeJar)) {
+        try (URLClassLoader cl = Main.createClassLoader(instrumentedCompileDir, runtimeJar)) {
             Class<?> traceClass = cl.loadClass("srctracer.Trace");
             Class<?> userClass = cl.loadClass(className);
             Method fuzzMethod = userClass.getMethod(FUZZ_TARGET_METHOD, byte[].class);
             fuzzMethod.setAccessible(true);
 
-            if (binary) {
+            if (args.binary()) {
                 ByteArrayOutputStream baos = new ByteArrayOutputStream();
                 traceClass.getMethod("trace_start_on_entry", OutputStream.class).invoke(null, baos);
                 invokeFuzzTarget(fuzzMethod, inputBytes);
@@ -437,7 +390,6 @@ class FuzzCommand {
                 System.out.println("  " + corpusEntryName + " does not reach " + target.methodName() + ", not verified");
                 return null;
             }
-            traceEvents = (long) traceClass.getMethod("trace_event_count").invoke(null);
         }
 
         Path keyDir = keyInputsDir.resolve("key-input-" + corpusEntryName);
@@ -448,114 +400,8 @@ class FuzzCommand {
 
         KeyAnnotater.annotate(target.sources(), keyDir, keyDir.resolve(traceFile.getFileName()),
                 keyDir.resolve(functionDbFile.getFileName()), target.methodName(), false);
-        Files.writeString(keyDir.resolve(TRACE_EVENTS_FILE), Long.toString(traceEvents));
 
         return keyDir;
-    }
-
-    /**
-     * Runs the KeY proofs of the corpus entries in the background, at most {@code --key-jobs} KeY processes at a
-     * time. Results are written to key-results.csv in the order the proofs finish. With {@code --stop-on-bug}, the
-     * first open proof cancels the pending proofs and kills the running KeY processes; their results are discarded.
-     */
-    private static final class KeyRunner implements AutoCloseable {
-        private final Main.TraceArgs args;
-        private final KeyResultsWriter keyResults;
-        private final ExecutorService executor;
-        private final Set<KeY> running = ConcurrentHashMap.newKeySet();
-        private final AtomicInteger bugsFound = new AtomicInteger();
-        private volatile boolean stopped = false;
-
-        KeyRunner(Main.TraceArgs args, KeyResultsWriter keyResults) {
-            this.args = args;
-            this.keyResults = keyResults;
-            this.executor = Executors.newFixedThreadPool(args.keyJobs());
-        }
-
-        int bugsFound() {
-            return bugsFound.get();
-        }
-
-        void submit(Path keyDir) {
-            if (stopped) return;
-            try {
-                executor.submit(() -> verify(keyDir));
-            } catch (RejectedExecutionException e) {
-                // stopped concurrently
-            }
-        }
-
-        private void verify(Path keyDir) {
-            String entryName = keyDir.getFileName().toString().replaceFirst("^key-input-", "");
-            Path keyProofFile = keyDir.resolve("proof.key");
-            if (stopped || !Files.exists(keyProofFile)) return;
-            Long traceEvents = readTraceEvents(keyDir);
-
-            KeY keyInstance = new KeY(keyProofFile, args.keyMemory());
-            // registered before checking stopped, so stop() either sees the instance or verify sees stopped
-            running.add(keyInstance);
-            KeY.ProofResult result;
-            try {
-                if (stopped) return;
-                keyInstance.runKey(args.keyTimeout());
-                if (stopped) return;
-                result = keyInstance.readProofResult();
-            } catch (Exception e) {
-                if (stopped) return;
-                System.out.println("  Could not run KeY for " + keyDir.getFileName() + ": " + e);
-                result = new KeY.ProofResult(KeY.ProofStatus.KEY_ERROR, null, null, null);
-            } finally {
-                running.remove(keyInstance);
-            }
-
-            try {
-                keyResults.write(entryName, result.status().name().toLowerCase(), result, traceEvents);
-            } catch (IOException e) {
-                System.out.println("  Could not write the KeY result of " + entryName + ": " + e);
-            }
-
-            switch (result.status()) {
-                case CLOSED -> System.out.println("  " + keyDir.getFileName() + " verified (0 open goals)");
-                case OPEN -> {
-                    System.out.println("  >>> BUG FOUND on path from " + keyDir.getFileName() + " (open goals > 0)");
-                    bugsFound.incrementAndGet();
-                    if (args.stopOnBug()) stop();
-                }
-                case STEP_LIMIT -> System.out.println("  KeY reached the rule application limit for " + keyDir.getFileName()
-                        + " (open goals remain, not counted as bug)");
-                case KEY_ERROR -> System.out.println("  KeY produced no result for " + keyDir.getFileName());
-                case KEY_TIMEOUT -> System.out.println("  KeY timed out for " + keyDir.getFileName());
-            }
-        }
-
-        private static Long readTraceEvents(Path keyDir) {
-            try {
-                return Long.parseLong(Files.readString(keyDir.resolve(TRACE_EVENTS_FILE)).trim());
-            } catch (IOException | NumberFormatException e) {
-                return null;
-            }
-        }
-
-        /** Waits until all submitted proofs are finished (or {@link #stop()} was called). */
-        void awaitAll() throws InterruptedException {
-            executor.shutdown();
-            executor.awaitTermination(Long.MAX_VALUE, TimeUnit.DAYS);
-        }
-
-        /** Cancels the pending proofs and kills the running KeY processes. */
-        void stop() {
-            stopped = true;
-            executor.shutdownNow();
-            for (KeY keyInstance : running) {
-                keyInstance.destroy();
-            }
-        }
-
-        @Override
-        public void close() throws InterruptedException {
-            stop();
-            executor.awaitTermination(Long.MAX_VALUE, TimeUnit.DAYS);
-        }
     }
 
     /**
@@ -598,80 +444,6 @@ class FuzzCommand {
         } catch (InvocationTargetException ignored) {
         } catch (IllegalAccessException e) {
             throw new RuntimeException(e);
-        }
-    }
-
-    /**
-     * Writes one line per replayed corpus entry to {@code replay-results.csv}:
-     * {@code index;entry;status;exception;run_ms;timestamp_ms}, where {@code index} is the position of the entry in
-     * the replay order and {@code timestamp_ms} the wall-clock time (epoch millis) the line was written.
-     */
-    private static final class ReplayResultsWriter implements AutoCloseable {
-        private final BufferedWriter writer;
-
-        ReplayResultsWriter(Path file) throws IOException {
-            writer = Files.newBufferedWriter(file);
-            writer.write("index;entry;status;exception;run_ms;timestamp_ms");
-            writer.newLine();
-            writer.flush();
-        }
-
-        void write(int index, String entry, ReplayOutcome outcome, long runMillis) throws IOException {
-            writer.write(index + ";" + entry + ";" + outcome.status() + ";"
-                    + (outcome.exception() == null ? "" : outcome.exception()) + ";"
-                    + runMillis + ";" + System.currentTimeMillis());
-            writer.newLine();
-            writer.flush();
-        }
-
-        @Override
-        public void close() throws IOException {
-            writer.close();
-        }
-    }
-
-    /**
-     * Writes one line per verified corpus entry to {@code key-results.csv}:
-     * {@code entry;status;open_goals;automode_ms;nodes;trace_events;elapsed_ms;timestamp_ms}, where {@code trace_events}
-     * is the number of events of the verified trace, {@code elapsed_ms} is measured from the start of the fuzz run and
-     * {@code timestamp_ms} is the wall-clock time (epoch millis) the line was written.
-     * The file is flushed after every line so partial runs remain usable. Thread-safe, the KeY proofs run in parallel.
-     */
-    private static final class KeyResultsWriter implements AutoCloseable {
-        private final BufferedWriter writer;
-        private final long startNanos = System.nanoTime();
-
-        KeyResultsWriter(Path file) throws IOException {
-            writer = Files.newBufferedWriter(file);
-            writer.write("entry;status;open_goals;automode_ms;nodes;trace_events;elapsed_ms;timestamp_ms");
-            writer.newLine();
-            writer.flush();
-        }
-
-        synchronized void write(String entry, String status, KeY.ProofResult result) throws IOException {
-            write(entry, status, result, null);
-        }
-
-        synchronized void write(String entry, String status, KeY.ProofResult result, Long traceEvents)
-                throws IOException {
-            long elapsedMillis = (System.nanoTime() - startNanos) / 1_000_000;
-            Integer openGoals = result == null ? null : result.openGoals();
-            Long automodeMillis = result == null ? null : result.automodeMillis();
-            Long nodes = result == null ? null : result.nodes();
-            writer.write(entry + ";" + status + ";"
-                    + (openGoals == null ? "" : openGoals) + ";"
-                    + (automodeMillis == null ? "" : automodeMillis) + ";"
-                    + (nodes == null ? "" : nodes) + ";"
-                    + (traceEvents == null ? "" : traceEvents) + ";"
-                    + elapsedMillis + ";"
-                    + System.currentTimeMillis());
-            writer.newLine();
-            writer.flush();
-        }
-
-        @Override
-        public void close() throws IOException {
-            writer.close();
         }
     }
 }

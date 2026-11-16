@@ -10,7 +10,9 @@ For every benchmark and approach (crash, key, runtime) this reports
     number of traces on which KeY found a bug / ran into its timeout
   - per mutant (mean over seeds): the traces of the key run (corpus entries reaching the method under test),
     the traces on which KeY found a bug or timed out, and the corpus entries that fail on the concrete run
-    (runtime asserts, or crashes if the runtime approach was not run) - all approaches replay the same corpus
+    (runtime asserts, or crashes if the runtime approach was not run) - all approaches on a mutant replay the
+    corpus Jazzer built by fuzzing that mutant
+  - the mutants on which KeY found a bug although Jazzer, fuzzing the mutant with the asserts, found none
   - per corpus entry, the agreement of KeY and the concrete run on the same input (needs the key approach; the
     concrete run is the runtime approach, or the key run's own crash oracle without it):
       both     KeY finds open goals and the concrete run fails
@@ -26,16 +28,19 @@ Reads the latest generate_mutants.py run in evaluation/mutation-out (or the one 
 
 Plots, summary.csv and per_mutant.csv (saved to the run directory evaluation/mutation-out/mutation_<timestamp>/):
   mutation_scores.png   mutation score per benchmark and approach
-  inputs_to_kill.png    cumulative share of mutants killed over the number of corpus inputs, per approach
-                        (plus the first bug found by KeY alone)
-  key_traces.png        per mutant: traces, traces on which KeY found a bug (dotted on top: KeY timeouts),
-                        corpus entries that fail on the concrete run
   agreement.png         share of traces per agreement cell, per benchmark (mutants pooled, and the unmutated
                         program, where every open goal is a false alarm)
   agreement_mutants.png the same per mutant, sorted by the share of "KeY only"
   agreement.csv         the agreement counts per benchmark, mutant and seed
-  key_time.png          KeY auto-mode time per proof over the number of trace events, one panel per benchmark
-                        (key runs of the unmutated program and all mutants; KeY timeouts drawn at --key-timeout)
+  key_time.png          KeY auto-mode time per proof over the number of trace elements, one panel per benchmark
+                        (key runs of the unmutated program and all mutants; KeY timeouts drawn at --key-timeout);
+                        the trace elements are counted in the traces/ of the key runs (deleted by --cleanup)
+  trace_overlap.png     how much the traces of a key run overlap, i.e. whether one shared proof over the prefix tree
+                        of the traces of a mutant would save work compared with one proof per trace from the start:
+                        per key run (mutant, seed) the trace elements in the prefix tree / summed over all traces and
+                        / summed over the distinct traces (the gain beyond skipping duplicate traces), and per distinct
+                        trace the share of its prefix that it shares with another distinct trace of the same run
+  trace_overlap.csv     the same per benchmark, mutant and seed (traces, distinct traces, elements, prefix-tree nodes)
 
 Usage:
   python analyze_mutation_eval.py                   # all benchmarks with a results.csv
@@ -49,6 +54,7 @@ import argparse
 import csv
 import json
 import os
+import re
 import sys
 from collections import defaultdict
 from statistics import median
@@ -70,6 +76,19 @@ TEXT_PRIMARY = "#0b0b0b"
 TEXT_SECONDARY = "#52514e"
 GRID = "#e1e0d9"
 AXIS = "#c3c2b7"
+
+
+def concrete_oracle(approaches):
+    """The approach whose replay is the concrete run compared with KeY: the runtime asserts, or the key run's own
+    crash oracle if the runtime approach was not run."""
+    return "runtime" if "runtime" in approaches else "key"
+
+
+CONCRETE_LABELS = {"runtime": "runtime asserts", "key": "crashes"}
+
+
+def mean(values, empty=None):
+    return sum(values) / len(values) if values else empty
 
 
 def load_results(run_dir, name):
@@ -131,7 +150,7 @@ def analyze(name, args):
                 key_timeouts.append(sum(int(r["key_timeout"] or 0) for r in evaluated))
                 key_times += [float(r["time_to_key_s"]) for r in evaluated if r.get("time_to_key_s")]
         summary[a] = {
-            "score": sum(scores) / len(scores) if scores else 0.0,
+            "score": mean(scores, 0.0),
             "score_min": min(scores) if scores else 0.0,
             "score_max": max(scores) if scores else 0.0,
             "killed_any": len(killed_any),
@@ -143,35 +162,134 @@ def analyze(name, args):
             # per run: seconds until KeY found the first bug
             "key_times": sorted(key_times),
             # traces (summed over all mutants) on which KeY found a bug / timed out, mean over seeds
-            "key_open_traces": sum(key_open) / len(key_open) if key_open else 0.0,
-            "key_timeout_traces": sum(key_timeouts) / len(key_timeouts) if key_timeouts else 0.0,
+            "key_open_traces": mean(key_open, 0.0),
+            "key_timeout_traces": mean(key_timeouts, 0.0),
         }
 
     per_mutant = mutant_traces(runs, valid, seeds, approaches)
-    if eval_parameter(args.run_dir, name, "corpus_per_mutant"):
-        print_beyond_fuzzer(runs, valid, seeds)
     agreement = load_agreement(args.run_dir, name, valid, seeds, approaches)
     proofs = load_proofs(args.run_dir, name, valid, seeds) if "key" in approaches else []
+    overlap = load_overlap(args.run_dir, name, valid, seeds) if "key" in approaches else []
     print_summary(name, valid, mutants, seeds, approaches, summary, kill_sets, args)
+    print_beyond_fuzzer(runs, valid, seeds)
     print_mutant_traces(per_mutant)
     print_agreement(agreement)
+    print_overlap(overlap)
     return {"name": name, "valid": len(valid), "approaches": approaches, "summary": summary,
             "runs": runs, "valid_ids": valid, "seeds": seeds, "per_mutant": per_mutant, "agreement": agreement,
-            "proofs": proofs, "key_timeout_s": eval_parameter(args.run_dir, name, "key_timeout")}
+            "proofs": proofs, "overlap": overlap, "key_timeout_s": eval_parameter(args.run_dir, name, "key_timeout")}
+
+
+def count_trace_elements(trace_file):
+    """Number of trace elements in a text trace (<entry>.trace.txt), or None if the trace is missing. Every element
+    starts with an upper-case letter (calls, catches and array dimensions are followed by a lower-case hex number);
+    a switch case counts as its 6 I/O elements. The end marker E is not counted."""
+    if not os.path.isfile(trace_file):
+        return None
+    with open(trace_file, encoding="utf-8") as f:
+        text = f.read()
+    return sum(c.isupper() for c in text) - text.count("E")
 
 
 def load_proofs(run_dir, name, valid, seeds):
-    """(trace events, auto-mode seconds or None, status) of every KeY proof of the key runs."""
+    """(trace elements, auto-mode seconds or None, status) of every KeY proof of the key runs."""
     proofs = []
     for m in [BASELINE] + valid:
         for s in seeds:
-            rows = read_semicolon_csv(os.path.join(run_dir, name, "runs", m, "key-s%s" % s, "key-results.csv"))
+            key_dir = os.path.join(run_dir, name, "runs", m, "key-s%s" % s)
+            rows = read_semicolon_csv(os.path.join(key_dir, "key-results.csv"))
             for r in rows or []:
-                if r["status"] in ("not_reached", "prepare_error", "key_error") or not r.get("trace_events"):
+                if r["status"] in ("not_reached", "prepare_error", "key_error"):
+                    continue
+                elements = count_trace_elements(os.path.join(key_dir, "traces", r["entry"] + ".trace.txt"))
+                if elements is None:
                     continue
                 t = int(r["automode_ms"]) / 1000.0 if r["automode_ms"] else None
-                proofs.append((int(r["trace_events"]), t, r["status"]))
+                proofs.append((elements, t, r["status"]))
     return proofs
+
+
+# ---- overlap of the traces of a key run (prefix tree) ----
+
+TRACE_ELEMENT = re.compile(r"[A-Z][0-9a-f]*")
+
+
+def read_trace_elements(trace_file):
+    """The trace elements of a text trace as a tuple (an upper-case letter, followed by a lower-case hex number for
+    calls, catches and array dimensions), without the end marker E; None if the trace is missing."""
+    if not os.path.isfile(trace_file):
+        return None
+    with open(trace_file, encoding="utf-8") as f:
+        return tuple(e for e in TRACE_ELEMENT.findall(f.read()) if e != "E")
+
+
+def common_prefix(a, b):
+    n = min(len(a), len(b))
+    i = 0
+    while i < n and a[i] == b[i]:
+        i += 1
+    return i
+
+
+def prefix_tree_stats(traces):
+    """Per distinct trace in lexicographic order: (its length, the common prefix with its predecessor, the longest
+    prefix it shares with any other trace). In this order, every trace adds its elements beyond the common prefix
+    with its predecessor to the prefix tree, and the longest common prefix with any other trace is the one with a
+    neighbor."""
+    ordered = sorted(traces)
+    lcp = [0] + [common_prefix(a, b) for a, b in zip(ordered, ordered[1:])] + [0]
+    return [(len(t), lcp[i], max(lcp[i], lcp[i + 1])) for i, t in enumerate(ordered)]
+
+
+def overlap_elements(o):
+    """(elements of all traces, of the distinct traces, nodes of the prefix tree) of a key run: the symbolic
+    execution of one proof per trace, one proof per distinct trace and one shared proof over the prefix tree."""
+    return (sum(o["lengths"]),
+            sum(n for n, _, _ in o["tree"]),
+            sum(n - lcp for n, lcp, _ in o["tree"]))
+
+
+def load_overlap(run_dir, name, valid, seeds):
+    """Per key run (unmutated program and every valid mutant, every seed) with at least one trace: the elements
+    summed over the traces of all corpus entries that reach the method under test (one proof per trace) and over the
+    distinct ones (one proof per distinct trace), and the prefix tree statistics of the distinct traces."""
+    overlap = []
+    for m in [BASELINE] + valid:
+        for s in seeds:
+            key_dir = os.path.join(run_dir, name, "runs", m, "key-s%s" % s)
+            rows = read_semicolon_csv(os.path.join(key_dir, "key-results.csv"))
+            traces = []
+            for r in rows or []:
+                if r["status"] == "not_reached":
+                    continue
+                t = read_trace_elements(os.path.join(key_dir, "traces", r["entry"] + ".trace.txt"))
+                if t:
+                    traces.append(t)
+            if not traces:
+                continue
+            distinct = set(traces)
+            overlap.append({"mutant": m, "seed": s, "traces": len(traces), "distinct": len(distinct),
+                            "lengths": [len(t) for t in traces], "tree": prefix_tree_stats(distinct)})
+    return overlap
+
+
+def print_overlap(overlap):
+    runs = [o for o in overlap if o["mutant"] != BASELINE]
+    if not runs:
+        return
+    shared = [sh / n for o in runs for n, _, sh in o["tree"]]
+    print("-" * 78)
+    print("Trace overlap of the key runs on the mutants (prefix tree of the traces of a run):")
+    print("  %d runs, %d traces (%d distinct); shared proof over the prefix tree relative to separate proofs:" % (
+        len(runs), sum(o["traces"] for o in runs), sum(o["distinct"] for o in runs)))
+    counts = [overlap_elements(o) for o in runs]
+    tree = sum(c[2] for c in counts)
+    for label, i in (("all traces", 0), ("distinct traces", 1)):
+        ratios = [c[2] / c[i] for c in counts]
+        print("  elements / %-15s: %5.1f%% of %d (pooled), per run median %.1f%%, min %.1f%%, max %.1f%%" % (
+            label, 100.0 * tree / sum(c[i] for c in counts), sum(c[i] for c in counts), 100 * median(ratios),
+            100 * min(ratios), 100 * max(ratios)))
+    print("  prefix shared with another distinct trace of the run: median %.1f%% of a trace" % (100 * median(shared)))
 
 
 def eval_parameter(run_dir, name, parameter):
@@ -184,29 +302,26 @@ def eval_parameter(run_dir, name, parameter):
 
 
 def print_beyond_fuzzer(runs, valid, seeds):
-    """With --corpus-per-mutant: mutants on which KeY found a bug although Jazzer, fuzzing the mutant with the asserts
-    checked on every execution, found nothing."""
+    """Mutants on which KeY found a bug although Jazzer, fuzzing the mutant with the asserts checked on every
+    execution, found nothing."""
     rows = [runs[("key", s)][m] for s in seeds for m in valid if m in runs.get(("key", s), {})]
     if not rows:
         return
     beyond = sorted({r["mutant"] for r in rows if not r["corpus_finding"] and int(r["key_open"] or 0) > 0}, key=int)
     fuzzer = {r["mutant"] for r in rows if r["corpus_finding"]}
-    print("Mutant corpora (--corpus-per-mutant): Jazzer found a bug in %d of %d mutants while fuzzing;" % (
+    print("-" * 78)
+    print("Jazzer found a bug in %d of %d mutants while fuzzing them for the corpus;" % (
         len(fuzzer), len({r["mutant"] for r in rows})))
     print("  KeY found a bug in %d mutant(s) where Jazzer found none: %s" % (len(beyond), beyond))
 
 
-def mean(values):
-    return sum(values) / len(values) if values else None
-
-
 def mutant_traces(runs, valid, seeds, approaches):
     """Per mutant, means over the seeds with a key run: traces (corpus entries reaching the method under test),
-    traces with an open proof / a KeY timeout, corpus entries that fail on the concrete run (runtime approach on
-    the same corpus, or the key run's own crash oracle without it), and the inputs needed to find the bug."""
+    traces with an open proof / a KeY timeout, corpus entries that fail on the concrete run (see concrete_oracle),
+    and the inputs needed to find the bug."""
     if "key" not in approaches:
         return []
-    concrete = "runtime" if "runtime" in approaches else "key"
+    concrete = concrete_oracle(approaches)
     per_mutant = []
     for m in valid:
         key_rows = [runs[("key", s)][m] for s in seeds if m in runs.get(("key", s), {})]
@@ -282,11 +397,10 @@ def compare_entries(key_rows, replay_rows):
 
 def load_agreement(run_dir, name, valid, seeds, approaches):
     """Agreement counts per (mutant, seed) for the unmutated program and every valid mutant with a key run.
-    The concrete verdict comes from the runtime run on the same corpus, or from the key run itself
-    (crash oracle) if the runtime approach was not run."""
+    The concrete verdict comes from the replay of the concrete_oracle approach on the same corpus."""
     if "key" not in approaches:
         return None
-    concrete = "runtime" if "runtime" in approaches else "key"
+    concrete = concrete_oracle(approaches)
     rows = []
     for m in [BASELINE] + valid:
         for s in seeds:
@@ -308,7 +422,7 @@ def print_agreement(agreement):
         return
     print("-" * 78)
     print("Agreement of KeY and the concrete run (%s) per corpus entry, summed over seeds:" % (
-        "runtime asserts" if agreement["concrete"] == "runtime" else "crashes of the key run"))
+        CONCRETE_LABELS[agreement["concrete"]]))
     for label, rows in (("unmutated", [r for r in agreement["rows"] if r["mutant"] == BASELINE]),
                         ("mutants", [r for r in agreement["rows"] if r["mutant"] != BASELINE])):
         if not rows:
@@ -339,7 +453,7 @@ def print_mutant_traces(per_mutant):
     fmt = lambda v: "-" if v is None else "%.1f" % v if v % 1 else "%d" % v
     concrete = per_mutant[0]["concrete_oracle"]
     print("-" * 78)
-    print("Per mutant (mean over seeds; concrete run: %s):" % ("runtime asserts" if concrete == "runtime" else "crashes"))
+    print("Per mutant (mean over seeds; concrete run: %s):" % CONCRETE_LABELS[concrete])
     print("%6s %7s %7s %8s %8s %9s %9s %9s" % (
         "mutant", "corpus", "traces", "KeY bug", "KeY t/o", "run fail", "in->KeY", "in->fail"))
     for p in per_mutant:
@@ -377,7 +491,7 @@ def print_summary(name, valid, mutants, seeds, approaches, summary, kill_sets, a
         t = s["key_times"]
         if t:
             print("KeY: time to first bug in %d run(s): median %.1fs, mean %.1fs, min %.1fs, max %.1fs" % (
-                len(t), median(t), sum(t) / len(t), t[0], t[-1]))
+                len(t), median(t), mean(t), t[0], t[-1]))
         else:
             print("KeY: no bug found in any run")
 
@@ -512,8 +626,8 @@ def plot_agreement(results, run_dir):
     ax.set_yticklabels([b[0] for b in bars], color=TEXT_PRIMARY)
     ax.set_xlim(0, 100)
     ax.set_xlabel("Share of traces (%)", color=TEXT_SECONDARY)
-    ax.set_title("KeY vs. concrete run (%s) on the same inputs" % (
-        "runtime asserts" if concrete == "runtime" else "crashes"), color=TEXT_PRIMARY, loc="left")
+    ax.set_title("KeY vs. concrete run (%s) on the same inputs" % CONCRETE_LABELS[concrete],
+                 color=TEXT_PRIMARY, loc="left")
     ax.legend(frameon=False, loc="upper left", bbox_to_anchor=(0, -0.12), ncol=3, labelcolor=TEXT_SECONDARY,
               fontsize=8)
     fig.tight_layout()
@@ -576,7 +690,7 @@ PROOF_STYLES = {
 
 
 def plot_key_time(results, run_dir):
-    """KeY auto-mode time over the trace length (events), one log-log panel per benchmark. Timeouts have no
+    """KeY auto-mode time over the trace length (trace elements), one log-log panel per benchmark. Timeouts have no
     auto-mode time; they are drawn as hollow markers on a dashed line at --key-timeout."""
     import matplotlib.pyplot as plt
 
@@ -604,7 +718,7 @@ def plot_key_time(results, run_dir):
                         ha="right", va="bottom", fontsize=8, color=TEXT_SECONDARY)
         ax.set_xscale("log")
         ax.set_yscale("log")
-        ax.set_xlabel("Trace events", color=TEXT_SECONDARY)
+        ax.set_xlabel("Trace elements", color=TEXT_SECONDARY)
         ax.set_title("%s (%d proofs)" % (r["name"], len(r["proofs"])), color=TEXT_PRIMARY, loc="left")
     axes[0, 0].set_ylabel("KeY auto-mode time (s)", color=TEXT_SECONDARY)
     handles, labels = {}, {}
@@ -616,6 +730,99 @@ def plot_key_time(results, run_dir):
     fig.tight_layout(rect=(0, 0.08, 1, 1))
     out = os.path.join(run_dir, "key_time.png")
     fig.savefig(out, dpi=150, facecolor=SURFACE)
+    print("Saved " + out)
+
+
+# the two baselines a shared proof over the prefix tree is compared with (index into overlap_elements)
+OVERLAP_VARIANTS = [
+    (0, "vs. one proof per trace", COLORS["key"]),
+    (1, "vs. one proof per distinct trace", COLORS["crash"]),
+]
+
+
+def plot_trace_overlap(results, run_dir):
+    """Per benchmark (key runs on the mutants): left, one dot per run with the elements of the prefix tree of its
+    traces relative to the elements of all its traces and of its distinct traces (the share of the symbolic execution
+    a shared proof still has to do; the gap between the two is what skipping duplicate traces alone saves); right,
+    one dot per distinct trace with the share of its prefix that it shares with another distinct trace of the run."""
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    rows = []  # (label, runs)
+    for r in results:
+        runs = [o for o in r["overlap"] if o["mutant"] != BASELINE]
+        if runs:
+            rows.append(("%s\n(%d runs, %d traces,\n%d distinct)" % (
+                r["name"], len(runs), sum(o["traces"] for o in runs), sum(o["distinct"] for o in runs)), runs))
+    if not rows:
+        return
+
+    rng = np.random.default_rng(0)
+    fig, axes = plt.subplots(1, 2, figsize=(12, 1.6 + 1.3 * len(rows)), facecolor=SURFACE, sharey=True)
+    y = np.arange(len(rows))[::-1]
+    for ax in axes:
+        style_axes(ax)
+        ax.yaxis.grid(False)
+        ax.xaxis.grid(True, color=GRID, linewidth=0.8)
+        ax.spines["bottom"].set_visible(False)
+        ax.set_xlim(-2, 102)
+
+    def strip(ax, yi, values, color, label=None, median_above=True):
+        """Jittered dots with a median tick, labeled above or below the strip."""
+        ax.scatter(values, yi + rng.uniform(-0.12, 0.12, len(values)), s=22, color=color, edgecolors=SURFACE,
+                   linewidths=0.8, alpha=0.8, zorder=3, label=label)
+        med = median(values)
+        ax.plot([med, med], [yi - 0.17, yi + 0.17], color=TEXT_PRIMARY, linewidth=2, zorder=4)
+        ax.annotate("median %.0f%%" % med, (med, yi + (0.17 if median_above else -0.17)),
+                    xytext=(0, 2 if median_above else -2), textcoords="offset points", ha="center",
+                    va="bottom" if median_above else "top", fontsize=8, color=TEXT_PRIMARY)
+
+    for yi, (_, runs) in zip(y, rows):
+        counts = [overlap_elements(o) for o in runs]
+        pooled = []
+        for j, (i, label, color) in enumerate(OVERLAP_VARIANTS):
+            strip(axes[0], yi + (0.2 if j == 0 else -0.2), [100.0 * c[2] / c[i] for c in counts], color,
+                  label=label if yi == y[0] else None, median_above=j == 0)
+            pooled.append("%.0f%%" % (100.0 * sum(c[2] for c in counts) / sum(c[i] for c in counts)))
+        axes[0].annotate("all runs:\n%s" % "\n".join(pooled), (1, yi), xycoords=("axes fraction", "data"),
+                         xytext=(-2, 0), textcoords="offset points", ha="right", va="center", fontsize=8,
+                         color=TEXT_SECONDARY)
+        strip(axes[1], yi, [100.0 * sh / n for o in runs for n, _, sh in o["tree"]], COLORS["key"])
+
+    axes[0].set_xlabel("Elements in the prefix tree (% of the elements of separate proofs)", color=TEXT_SECONDARY)
+    axes[0].set_title("Work of one shared proof per mutant", color=TEXT_PRIMARY, loc="left")
+    axes[1].set_xlabel("Prefix shared with another distinct trace (% of the trace)", color=TEXT_SECONDARY)
+    axes[1].set_title("Overlap per distinct trace", color=TEXT_PRIMARY, loc="left")
+    axes[0].set_yticks(y)
+    axes[0].set_yticklabels([row[0] for row in rows], color=TEXT_PRIMARY)
+    axes[0].set_ylim(-0.6, len(rows) - 0.4)
+    fig.legend(*axes[0].get_legend_handles_labels(), frameon=False, loc="lower left", ncol=2,
+               labelcolor=TEXT_SECONDARY, fontsize=8)
+    fig.text(0.99, 0.015, "Left: one dot per key run (mutant, seed), lower = more work saved. "
+                          "Right: one dot per distinct trace, higher = later divergence.",
+             ha="right", fontsize=8, color=TEXT_SECONDARY)
+    fig.tight_layout(rect=(0, 0.05, 1, 1))
+    out = os.path.join(run_dir, "trace_overlap.png")
+    fig.savefig(out, dpi=150, facecolor=SURFACE)
+    print("Saved " + out)
+
+
+def write_overlap_csv(results, run_dir):
+    rows = [(r["name"], o) for r in results for o in r["overlap"]]
+    if not rows:
+        return
+    out = os.path.join(run_dir, "trace_overlap.csv")
+    with open(out, "w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["program", "mutant", "seed", "traces", "distinct_traces", "elements", "elements_distinct",
+                         "prefix_tree_nodes", "prefix_tree_share", "prefix_tree_share_distinct", "max_trace_len",
+                         "median_shared_prefix_share_distinct"])
+        for name, o in rows:
+            elements, elements_distinct, nodes = overlap_elements(o)
+            writer.writerow([name, o["mutant"], o["seed"], o["traces"], o["distinct"], elements, elements_distinct,
+                             nodes, "%.4f" % (nodes / elements), "%.4f" % (nodes / elements_distinct),
+                             max(o["lengths"]),
+                             "%.4f" % median(sh / n for n, _, sh in o["tree"])])
     print("Saved " + out)
 
 
@@ -663,7 +870,7 @@ def write_summary_csv(results, run_dir):
                 if a == "key":
                     t = s["key_times"]
                     key = ["%.1f" % s["key_open_traces"], "%.1f" % s["key_timeout_traces"], len(t),
-                           "%.1f" % median(t) if t else "", "%.1f" % (sum(t) / len(t)) if t else ""]
+                           "%.1f" % median(t) if t else "", "%.1f" % mean(t) if t else ""]
                 writer.writerow([r["name"], a, r["valid"], "%.4f" % s["score"], "%.4f" % s["score_min"],
                                  "%.4f" % s["score_max"], s["killed_any"], s["wall_limit"], s["error"],
                                  s["missing"], s["step_limit_runs"], s["key_timeout_runs"]] + key)
@@ -691,6 +898,7 @@ def main():
     write_summary_csv(results, args.run_dir)
     write_per_mutant_csv(results, args.run_dir)
     write_agreement_csv(results, args.run_dir)
+    write_overlap_csv(results, args.run_dir)
 
     if not args.no_plot:
         import matplotlib.pyplot as plt
@@ -698,6 +906,7 @@ def main():
         plot_agreement(results, args.run_dir)
         plot_agreement_mutants(results, args.run_dir)
         plot_key_time(results, args.run_dir)
+        plot_trace_overlap(results, args.run_dir)
         plt.show()
 
 

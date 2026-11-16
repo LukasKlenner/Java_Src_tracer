@@ -23,18 +23,10 @@ public final class Trace {
     private static boolean lifecycleThrew = false;
     // output that recording starts with once the start method is entered (see trace_start_on_entry)
     private static Writer pendingOut;
-    // events recorded since recording started (the end marker E is not counted)
-    private static long eventCount = 0;
 
     private static final String OUT_DIR = "trace-out/";
 
-    /** Writes one event. */
     private static void write(String s) {
-        if (out != null) eventCount++;
-        writeRaw(s);
-    }
-
-    private static void writeRaw(String s) {
         try {
             if (out != null) out.write(s);
         } catch (Exception e) {
@@ -119,7 +111,6 @@ public final class Trace {
 
     public static void trace_start(Writer writer) {
         out = writer;
-        eventCount = 0;
     }
 
     /**
@@ -139,7 +130,6 @@ public final class Trace {
             // forget the state left by instrumented code that ran before (it was not recorded)
             breakBefore = false;
             totalCatchCount = 0;
-            eventCount = 0;
             out = pendingOut;
             pendingOut = null;
             return;
@@ -165,7 +155,7 @@ public final class Trace {
     /** Called when the start method returns (and by the tool / shutdown hook after the run). */
     public static void trace_end() {
         if (lifecycleDepth > 0 && --lifecycleDepth > 0) return; // return of a recursive call
-        writeRaw("E");
+        write("E");
         try {
             if (out != null) {
                 out.close();
@@ -174,14 +164,6 @@ public final class Trace {
         } catch (Exception e) {
             // swallow
         }
-    }
-
-    /**
-     * Number of events recorded so far: branch decisions, calls, returns, try/try-end/catch markers, switch cases
-     * and array dimensions (a switch case counts once). The same count as the binary runtime.
-     */
-    public static long trace_event_count() {
-        return eventCount;
     }
 
     /** Whether the start method was entered, i.e. whether a trace was recorded. */

@@ -2,9 +2,12 @@
 Run the mutation evaluation: run every mutant of a benchmark on a fixed set of inputs with each
 approach and record whether the approach flags the mutant as buggy ("kills" it).
 
-The inputs are the same for every approach and mutant, so the approaches differ only in their oracle:
-per seed, Jazzer fuzzes the unmutated program once for --duration seconds (crash oracle, plain harness);
-its corpus is then replayed on the original and on every mutant (fuzz command option --corpus).
+The inputs are the same for every approach on a mutant, so the approaches differ only in their oracle:
+per seed, Jazzer fuzzes every mutant (and the unmutated program) once for --duration seconds; its corpus is
+then replayed on that mutant with every approach (fuzz command option --corpus).
+The corpus is fuzzed on <Name>Assert.java, so the fuzzer checks the asserts on every execution at full strength and
+is not restricted to the inputs of the unmutated program; its finding (crash-*, timeout-*, oom-* input), if any, is
+added to the corpus, so every approach also replays the input the fuzzer found the bug with.
 
 Approaches (= values of the fuzz command's --oracle option):
   crash    every corpus entry is run on <Name>.java; only crashes / uncaught exceptions / timeouts count
@@ -18,17 +21,11 @@ next to the mutated <Name>Impl.java. The fuzz command is given the directory; it
 A corpus entry that exceeds --jazzer-timeout (e.g. an infinite loop in a mutant) kills the mutant;
 the remaining entries are skipped.
 
-With --corpus-per-mutant, Jazzer instead fuzzes every mutant itself (once per seed, for --duration seconds) and
-all approaches replay the mutant's own corpus. The corpus is fuzzed on <Name>Assert.java, so the fuzzer checks
-the asserts on every execution at full strength and is not restricted to the inputs of the unmutated program;
-its finding (crash-*, timeout-*, oom-* input), if any, is added to the corpus, so every approach also replays the
-input the fuzzer found the bug with. The corpus of the unmutated program is fuzzed the same way (baseline).
-
 Prerequisites:
   python generate_mutants.py <Name>            (creates evaluation/mutation-out/mutation_<timestamp>/<Name>/)
   gradlew installDist :runtime:jar             (creates build/install/java-src-tracer/)
 
-The corpus runs come first; a Jazzer finding on the unmutated program aborts the evaluation. Then the
+The corpus runs of the unmutated program come first; a Jazzer finding on it aborts the evaluation. Then the
 unmutated program is run with every approach and seed; if any approach flags it, the oracle or harness
 is wrong and the evaluation aborts.
 
@@ -42,9 +39,8 @@ Output (evaluation/mutation-out/mutation_<timestamp>/<Name>/):
                         --max-len, --key-timeout, --key-memory, --key-jobs, --key-budget, --startup-slack);
                         resuming with different values is refused. Also lists every invocation
                         (time, git commit of the tool, --jobs, --java-home, approaches, seeds, mutants).
-  corpus/s<seed>/       Jazzer run on the unmutated program; corpus/s<seed>/corpus/ is replayed by all runs
-  corpus/<mutant>/s<seed>/   with --corpus-per-mutant: Jazzer run on the mutant ("original" for the baseline);
-                        its corpus/ (plus the finding) is replayed by the runs of this mutant
+  corpus/<mutant>/s<seed>/   Jazzer run on the mutant ("original" for the baseline); its corpus/ (plus the
+                        finding) is replayed by the runs of this mutant
   runs/<mutant>/<approach>-s<seed>/   output directory of the fuzz command (+ tool.log), with
                         replay-results.csv (outcome of the concrete run per corpus entry) and, for key,
                         key-results.csv (KeY result per corpus entry)
@@ -54,17 +50,15 @@ results.csv columns:
   status          killed | survived | wall_limit | error
   reason          what killed the mutant: key, assert (AssertionError), timeout, oom,
                   or the exception class (e.g. java.lang.ArrayIndexOutOfBoundsException)
-  killed_by_key   1 if KeY found a proof with open goals (key approach only)
-  killed_by_run   1 if a corpus entry failed on the concrete run (exception, failed assert, timeout)
   inputs_to_kill  corpus entries (in replay order) up to and including the first one that killed the mutant
   inputs_to_key   the same for the first proof with open goals (key approach only)
   time_to_kill_s  seconds from process start to the first finding
   time_to_key_s   seconds from process start to the first proof with open goals (key approach only)
   wall_s          total wall-clock seconds of the run
   corpus_size     number of corpus entries replayed
-  run_failures    number of corpus entries that failed on the concrete run
-  corpus_finding  with --corpus-per-mutant: what Jazzer found while fuzzing the mutant with the asserts on every
-                  execution (assert, timeout, oom or the exception class; empty if nothing)
+  run_failures    number of corpus entries that failed on the concrete run (exception, failed assert, timeout)
+  corpus_finding  what Jazzer found while fuzzing the mutant with the asserts on every execution
+                  (assert, timeout, oom or the exception class; empty if nothing)
   key_proofs, key_open, key_step_limit, key_timeout, key_error   counts from key-results.csv
                   (key_proofs: corpus entries that reach the method under test; key_open: traces on which
                   KeY found a bug; key_timeout: traces on which KeY ran into --key-timeout)
@@ -104,7 +98,7 @@ BASELINE = "original"
 
 RESULT_FIELDS = [
     "program", "mutant", "approach", "seed", "status", "reason",
-    "killed_by_key", "killed_by_run", "inputs_to_kill", "inputs_to_key", "time_to_kill_s", "time_to_key_s",
+    "inputs_to_kill", "inputs_to_key", "time_to_kill_s", "time_to_key_s",
     "wall_s", "corpus_size", "run_failures", "corpus_finding", "key_proofs", "key_open", "key_step_limit", "key_timeout", "key_error",
 ]
 
@@ -114,7 +108,7 @@ CONFIG_FILE = "eval_config.json"
 
 # options that change the outcome of a run; all rows of a results.csv must be produced with the same values
 RESULT_PARAMETERS = ["duration", "jazzer_timeout", "max_len", "key_timeout", "key_memory", "key_jobs", "key_budget",
-                     "startup_slack", "corpus_per_mutant"]
+                     "startup_slack"]
 
 
 # ---- selection ----
@@ -233,10 +227,10 @@ def kill_tree(proc):
     proc.wait()
 
 
-def corpus_command(source, oracle, seed, run_dir, args):
-    """Fuzz command that lets Jazzer build the corpus that the approaches replay."""
+def corpus_command(source, seed, run_dir, args):
+    """Fuzz command that lets Jazzer build the corpus that the approaches replay (asserts as oracle)."""
     cmd = [CLI, "fuzz", source,
-           "--oracle", oracle,
+           "--oracle", "runtime",
            "-o", run_dir,
            "--duration", str(args.duration),
            "--seed", str(seed),
@@ -374,7 +368,7 @@ def key_summary(run_dir, start, order):
     return counts, first_open, t_first
 
 
-def classify(program, mutant, approach, seed, run_dir, wall, start, hit_limit, exit_code):
+def classify(program, mutant, approach, seed, run_dir, wall, start, hit_limit, exit_code, corpus_finding):
     order, run_failures, first_failure = replay_summary(run_dir, start)
     key_counts, first_open, t_key = key_summary(run_dir, start, order) if approach == "key" else ({}, None, None)
 
@@ -398,15 +392,12 @@ def classify(program, mutant, approach, seed, run_dir, wall, start, hit_limit, e
         return key_counts.get(name, "") if approach == "key" else ""
 
     return {
-        "corpus_finding": "",
         "program": program,
         "mutant": mutant,
         "approach": approach,
         "seed": seed,
         "status": status,
         "reason": kill_reason,
-        "killed_by_key": int(killed_by_key) if approach == "key" else "",
-        "killed_by_run": int(killed_by_run),
         "inputs_to_kill": "" if i_kill is None else i_kill + 1,
         "inputs_to_key": "" if first_open is None else first_open[0] + 1,
         "time_to_kill_s": "" if t_kill is None else "%.1f" % max(t_kill, 0.0),
@@ -414,6 +405,7 @@ def classify(program, mutant, approach, seed, run_dir, wall, start, hit_limit, e
         "wall_s": "%.1f" % wall,
         "corpus_size": len(order),
         "run_failures": run_failures,
+        "corpus_finding": corpus_finding,
         "key_proofs": sum(n for s, n in key_counts.items() if s != "not_reached") if approach == "key" else "",
         "key_open": key_count("open"),
         "key_step_limit": key_count("step_limit"),
@@ -471,10 +463,8 @@ def check_baseline(name, results_file, args):
                  % (name, results_file))
 
 
-def corpus_run_dir(out_dir, mutant, seed, args):
-    if args.corpus_per_mutant:
-        return os.path.join(out_dir, "corpus", mutant, "s%s" % seed)
-    return os.path.join(out_dir, "corpus", "s%s" % seed)
+def corpus_run_dir(out_dir, mutant, seed):
+    return os.path.join(out_dir, "corpus", mutant, "s%s" % seed)
 
 
 def corpus_finding_of(run_dir):
@@ -484,27 +474,25 @@ def corpus_finding_of(run_dir):
 
 
 def build_corpora(name, out_dir, mutants, args, env):
-    """Lets Jazzer build the corpora: once per seed on the unmutated program, or with --corpus-per-mutant once per
-    mutant and seed on the mutant (asserts as oracle, the finding is added to the corpus). Returns
-    (mutant, seed) -> corpus directory. Finished corpora are reused, so an interrupted evaluation replays the same
+    """Lets Jazzer build the corpora, once per mutant and seed on the mutant (asserts as oracle, the finding is
+    added to the corpus). Returns (mutant, seed) -> corpus directory. Finished corpora are reused, so an interrupted evaluation replays the same
     inputs. A finding on the unmutated program aborts the evaluation."""
     corpora, todo = {}, []
     for mutant in mutants:
         for seed in args.seeds:
-            run_dir = corpus_run_dir(out_dir, mutant, seed, args)
+            run_dir = corpus_run_dir(out_dir, mutant, seed)
             corpora[(mutant, seed)] = os.path.join(run_dir, "corpus")
-            if not os.path.isfile(os.path.join(run_dir, "done")) and (mutant, seed) not in [t[:2] for t in todo]:
+            if not os.path.isfile(os.path.join(run_dir, "done")):
                 todo.append((mutant, seed, run_dir))
     if not todo:
         return corpora
 
-    oracle = "runtime" if args.corpus_per_mutant else "crash"
-    label = "%d mutant(s)" % len({t[0] for t in todo}) if args.corpus_per_mutant else "the unmutated program"
+    label = "the unmutated program" if mutants == [BASELINE] else "%d mutant(s)" % len({t[0] for t in todo})
     print("%s: fuzzing %s for the corpus (%d run(s)) ..." % (name, label, len(todo)))
 
     def job(mutant, seed, run_dir):
         source = os.path.join(out_dir, "original") if mutant == BASELINE else os.path.join(out_dir, "mutants", mutant)
-        cmd, wall_limit = corpus_command(source, oracle, seed, run_dir, args)
+        cmd, wall_limit = corpus_command(source, seed, run_dir, args)
         wall, start, hit_limit, exit_code = run_fuzz(cmd, wall_limit, run_dir, env)
         corpus = corpora[(mutant, seed)]
         reason, _ = jazzer_finding(run_dir, start)
@@ -563,19 +551,20 @@ def evaluate(name, args, env):
         else:
             source = os.path.join(out_dir, "mutants", mutant)
         run_dir = os.path.join(out_dir, "runs", mutant, "%s-s%s" % (approach, seed))
-        corpus_mutant = mutant if args.corpus_per_mutant else BASELINE
-        cmd, wall_limit = replay_command(source, approach, corpora[(corpus_mutant, seed)], run_dir, args)
+        cmd, wall_limit = replay_command(source, approach, corpora[(mutant, seed)], run_dir, args)
         wall, start, hit_limit, exit_code = run_fuzz(cmd, wall_limit, run_dir, env)
-        row = classify(name, mutant, approach, seed, run_dir, wall, start, hit_limit, exit_code)
-        if args.corpus_per_mutant:
-            row["corpus_finding"] = corpus_finding_of(corpus_run_dir(out_dir, corpus_mutant, seed, args))
+        row = classify(name, mutant, approach, seed, run_dir, wall, start, hit_limit, exit_code,
+                       corpus_finding_of(corpus_run_dir(out_dir, mutant, seed)))
         if args.cleanup:
             cleanup_run_dir(run_dir)
         results.write(row)
         return row
 
+    def not_done(tasks):
+        return [t for t in tasks if (t[0], t[1], str(t[2])) not in done]
+
     def run_all(tasks, label):
-        tasks = [t for t in tasks if (t[0], t[1], str(t[2])) not in done]
+        tasks = not_done(tasks)
         if not tasks:
             return []
         print("%s: %d run(s) %s ..." % (name, len(tasks), label))
@@ -608,20 +597,15 @@ def evaluate(name, args, env):
         pool.shutdown()
         return rows
 
-    def pending(tasks):
-        return [t for t in tasks if (t[0], t[1], str(t[2])) not in done]
-
     try:
         baseline_tasks = [(BASELINE, a, s) for a in args.approaches for s in args.seeds]
-        # the corpus of the unmutated program is also needed without --corpus-per-mutant (it is the shared corpus)
-        if pending(baseline_tasks) or not args.corpus_per_mutant:
+        if not_done(baseline_tasks):
             corpora.update(build_corpora(name, out_dir, [BASELINE], args, env))
         run_all(baseline_tasks, "on the unmutated program (baseline)")
         check_baseline(name, results_file, args)
 
         tasks = [(m, a, s) for m in mutants for a in args.approaches for s in args.seeds]
-        if args.corpus_per_mutant:
-            corpora.update(build_corpora(name, out_dir, sorted({t[0] for t in pending(tasks)}, key=int), args, env))
+        corpora.update(build_corpora(name, out_dir, sorted({t[0] for t in not_done(tasks)}, key=int), args, env))
         run_all(tasks, "on %d mutant(s)" % len(mutants))
     finally:
         results.close()
@@ -653,9 +637,6 @@ def main():
     parser.add_argument("--jobs", type=int, default=1, help="Number of runs executed in parallel (default: 1)")
     parser.add_argument("--java-home", help="JDK used for the tool, Jazzer and KeY (sets JAVA_HOME and PATH)")
     parser.add_argument("--cleanup", action="store_true", help="Delete traces and KeY proof directories after each run")
-    parser.add_argument("--corpus-per-mutant", action="store_true",
-                        help="Let Jazzer fuzz every mutant itself (with the asserts as oracle) and replay the mutant's "
-                             "own corpus, instead of replaying the corpus of the unmutated program")
     parser.add_argument("--allow-baseline-findings", action="store_true",
                         help="Continue even if the unmutated program is flagged")
     args = parser.parse_args()

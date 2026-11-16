@@ -26,7 +26,11 @@ public final class Trace {
     private static final int RETURN    = 0x52; // 'R'
     private static final int TRY       = 0x54; // 'T'
     private static final int CATCH_T   = 0x68; // ELEM2 CATCH
+    private static final int DATA      = 0x70; // ELEM2 DATA
+    private static final int LEN_0     = 0x00;
+    private static final int LEN_8     = 0x01;
     private static final int LEN_16    = 0x02;
+    private static final int LEN_32    = 0x03;
     private static final int IE_INIT   = 0xFE;
 
     private static final int IE_FLUSH_THRESHOLD = 0xC0;
@@ -39,6 +43,8 @@ public final class Trace {
     private static int ieByte = IE_INIT;
     private static boolean breakBefore = false;
 
+    public static long totalCatchCount = 0;
+
     // Invocations of the start (lifecycle) method that have not returned yet. Only the first invocation is
     // recorded: its recursive calls do not end the trace, and later invocations record nothing.
     private static int lifecycleDepth = 0;
@@ -49,12 +55,6 @@ public final class Trace {
     private static OutputStream pendingOut;
 
     private static OutputStream out;
-    // events recorded since recording started (the end marker is not counted)
-    private static long eventCount = 0;
-
-    private static void countEvent() {
-        if (out != null) eventCount++;
-    }
 
     // ---- low-level byte buffer ----
 
@@ -91,14 +91,12 @@ public final class Trace {
     }
 
     public static void _IF() {
-        countEvent();
         // rotate left by 1
         ieByte = ((ieByte << 1) | (ieByte >>> 7)) & 0xFF;
         prepareNext();
     }
 
     public static void _ELSE() {
-        countEvent();
         ieByte = (ieByte << 1) & 0xFF;
         prepareNext();
     }
@@ -116,7 +114,7 @@ public final class Trace {
     public static void _IMPLICIT_EXCEPTION()    { _IF(); }
     public static void _NO_IMPLICIT_EXCEPTION() { _ELSE(); }
 
-    public static boolean _TERNARY(int id, boolean condition) {
+    public static boolean _COND(boolean condition) {
         if (condition) {
             _IF();
         } else {
@@ -132,7 +130,6 @@ public final class Trace {
     // ---- function entry (variable-length, big-endian) ----
 
     public static void _FUNC(int num) {
-        countEvent();
         ieFinish();
         if (num == 0) {
             putByte(FUNC_ANON);
@@ -162,30 +159,26 @@ public final class Trace {
     // ---- element markers ----
 
     public static void _RETURN() {
-        countEvent();
         ieFinish();
         putByte(RETURN);
     }
 
     public static void _TRY() {
-        countEvent();
         ieFinish();
         putByte(TRY);
     }
 
     /** No-op in binary mode (matches C #else branch in trace_mode.h). */
     public static void _TRY_END() {
-        // intentionally empty, but counted like the text runtime's U
-        countEvent();
+        // intentionally empty
     }
 
-    public static void _CATCH(int idx) {
-        countEvent();
+    public static void _CATCH(long idx) {
         ieFinish();
         // NUM_16: type byte (CATCH | LEN_16), then 2 bytes little-endian
         putByte(CATCH_T | LEN_16);
-        putByte(idx & 0xFF);
-        putByte((idx >> 8) & 0xFF);
+        putByte((int) (idx & 0xFF));
+        putByte((int) ((idx >> 8) & 0xFF));
     }
 
     /**
@@ -194,9 +187,46 @@ public final class Trace {
      * which is exactly the C version's behavior for 6-bit cases.
      */
     public static void _CASE(int caseId) {
-        countEvent();
         ieFinish();
         putByte(0x80 | (caseId & 0x3F));
+    }
+
+    /**
+     * Records a non-negative array dimension as a DATA element with the shortest length that fits (as C's
+     * _TRACE_NUM, little-endian). A negative dimension is recorded as an IF and throws.
+     */
+    public static int _DIM(int dimension) {
+        if (dimension < 0) {
+            _IF();
+            throw new NegativeArraySizeException("Negative array size: " + dimension);
+        }
+        ieFinish();
+        if (dimension == 0) {
+            putByte(DATA | LEN_0);
+        } else if ((dimension & ~0xFF) == 0) {
+            putByte(DATA | LEN_8);
+            putByte(dimension);
+        } else if ((dimension & ~0xFFFF) == 0) {
+            putByte(DATA | LEN_16);
+            putByte(dimension & 0xFF);
+            putByte((dimension >> 8) & 0xFF);
+        } else {
+            putByte(DATA | LEN_32);
+            putByte(dimension & 0xFF);
+            putByte((dimension >> 8) & 0xFF);
+            putByte((dimension >> 16) & 0xFF);
+            putByte((dimension >> 24) & 0xFF);
+        }
+        return dimension;
+    }
+
+    public static int _LAST_DIM(int dimension) {
+        if (dimension < 0) {
+            _IF();
+            throw new NegativeArraySizeException("Negative array size: " + dimension);
+        }
+        _ELSE();
+        return dimension;
     }
 
     // try/catch the instrumenter wraps around the start method; only recorded for its outermost invocation.
@@ -206,7 +236,7 @@ public final class Trace {
     public static void _LIFECYCLE_CATCH(long catchIndex) {
         if (lifecycleDepth == 1) {
             lifecycleThrew = true;
-            _CATCH((int) catchIndex);
+            _CATCH(catchIndex);
         }
     }
 
@@ -214,7 +244,6 @@ public final class Trace {
 
     public static void trace_start(OutputStream stream) {
         out = stream;
-        eventCount = 0;
     }
 
     /**
@@ -233,9 +262,9 @@ public final class Trace {
         if (pendingOut != null) {
             // forget the state left by instrumented code that ran before (it was not recorded)
             breakBefore = false;
+            totalCatchCount = 0;
             ieByte = IE_INIT;
             bufPos = 0;
-            eventCount = 0;
             out = pendingOut;
             pendingOut = null;
             return;
@@ -271,14 +300,6 @@ public final class Trace {
         } catch (Exception e) {
             // swallow
         }
-    }
-
-    /**
-     * Number of events recorded so far: branch decisions, calls, returns, try/try-end/catch markers and switch
-     * cases (a switch case counts once). The same count as the text runtime.
-     */
-    public static long trace_event_count() {
-        return eventCount;
     }
 
     /** Whether the start method was entered, i.e. whether a trace was recorded. */
