@@ -3,7 +3,7 @@ package srctracer.tools;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
-class ToolsUtils {
+public class ToolsUtils {
 
     public static Path findProjectRoot() {
         Path dir = Path.of("").toAbsolutePath();

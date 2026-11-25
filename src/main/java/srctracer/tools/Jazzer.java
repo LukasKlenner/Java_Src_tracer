@@ -9,57 +9,27 @@ import static srctracer.tools.ToolsUtils.findProjectRoot;
 
 public class Jazzer {
 
-    private static final String JAZZER_DIR = "tools/jazzer";
-    private static final String JAZZER_EXE = "jazzer.exe";
-
-    public static Process startJazzerAsync(
-            String className,
-            Path classDir,
-            Path corpusDir,
-            int durationSeconds,
-            Path outputDir
-    ) throws Exception {
-        return startJazzerAsync(className, classDir, corpusDir, durationSeconds, outputDir, false, List.of());
-    }
-
-    public static Process startJazzerAsync(
-            String className,
-            Path classDir,
-            Path corpusDir,
-            int durationSeconds,
-            Path outputDir,
-            boolean stopOnFirstFinding,
-            List<String> extraArgs
-    ) throws Exception {
-        Path jazzer = resolveJazzer();
+    /**
+     * Starts tools/jazzer/jazzer.exe on {@code className} for {@code durationSeconds}, with the corpus in
+     * {@code corpusDir}. Jazzer runs in {@code outputDir} (where it writes its findings) and logs to jazzer.log there.
+     */
+    public static Process start(String className, Path classDir, Path corpusDir, int durationSeconds, Path outputDir,
+                                List<String> extraArgs) throws Exception {
+        Path jazzer = findProjectRoot().resolve("tools/jazzer/jazzer.exe");
+        if (!Files.exists(jazzer)) throw new RuntimeException("Jazzer not found: " + jazzer);
 
         List<String> command = new ArrayList<>(List.of(
                 jazzer.toAbsolutePath().toString(),
                 "--cp=" + classDir.toAbsolutePath(),
                 "--target_class=" + className,
-                String.format("-max_total_time=%d", durationSeconds)
-        ));
+                "-max_total_time=" + durationSeconds));
         command.addAll(extraArgs);
         command.add(corpusDir.toAbsolutePath().toString());
 
-        Path jazzerLog = outputDir.resolve("jazzer.log");
-
-        ProcessBuilder pb = new ProcessBuilder(command);
-        pb.directory(outputDir.toAbsolutePath().toFile());
-        pb.redirectOutput(jazzerLog.toFile());
-        pb.redirectErrorStream(true);
-
-        return pb.start();
+        return new ProcessBuilder(command)
+                .directory(outputDir.toAbsolutePath().toFile())
+                .redirectOutput(outputDir.resolve("jazzer.log").toFile())
+                .redirectErrorStream(true)
+                .start();
     }
-
-    private static Path resolveJazzer() {
-        Path projectRoot = findProjectRoot();
-        Path jazzer = projectRoot.resolve(JAZZER_DIR).resolve(JAZZER_EXE);
-        if (!Files.exists(jazzer)) {
-            throw new RuntimeException("Jazzer not found: " + jazzer
-                    + "\nPlace jazzer.exe in " + projectRoot.resolve(JAZZER_DIR));
-        }
-        return jazzer;
-    }
-
 }

@@ -8,42 +8,40 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 /**
- * Writes one line per verified corpus entry to {@code key-results.csv}:
- * {@code entry;status;open_goals;automode_ms;nodes;elapsed_ms;timestamp_ms}, where {@code elapsed_ms} is measured
- * from the start of the fuzz run and {@code timestamp_ms} is the wall-clock time (epoch millis) the line was written.
- * The file is flushed after every line so partial runs remain usable. Thread-safe, the KeY proofs run in parallel.
+ * key-results.csv: {@code entry;status;open_goals;automode_ms;nodes;timestamp_ms}, one line per corpus entry with the
+ * result of its proof (per-trace) or {@link #TRACED} (multi-trace), {@link #NOT_REACHED} or {@link #PREPARE_ERROR};
+ * multi-trace adds a last line {@link #ALL_TRACES} with the result of the proof over all traces. A proof status is
+ * the lower-case {@link KeY.ProofStatus}. Flushed after every line; thread-safe.
  */
 final class KeyResultsWriter implements AutoCloseable {
 
-    static final String FILE_NAME = "key-results.csv";
-
-    /** Status of a corpus entry that does not call the traced method (nothing to verify). */
+    static final String ALL_TRACES = "traces";
+    static final String TRACED = "traced";
     static final String NOT_REACHED = "not_reached";
-
-    /** Status of a corpus entry that could not be traced or annotated. */
     static final String PREPARE_ERROR = "prepare_error";
 
     private final BufferedWriter writer;
-    private final long startNanos = System.nanoTime();
 
-    KeyResultsWriter(Path file) throws IOException {
-        writer = Files.newBufferedWriter(file);
-        writer.write("entry;status;open_goals;automode_ms;nodes;elapsed_ms;timestamp_ms");
-        writer.newLine();
-        writer.flush();
+    KeyResultsWriter(Path outputDir) throws IOException {
+        writer = Files.newBufferedWriter(outputDir.resolve("key-results.csv"));
+        writeLine("entry;status;open_goals;automode_ms;nodes;timestamp_ms");
     }
 
-    synchronized void write(String entry, String status, KeY.ProofResult result) throws IOException {
-        long elapsedMillis = (System.nanoTime() - startNanos) / 1_000_000;
-        Integer openGoals = result == null ? null : result.openGoals();
-        Long automodeMillis = result == null ? null : result.automodeMillis();
-        Long nodes = result == null ? null : result.nodes();
-        writer.write(entry + ";" + status + ";"
-                + (openGoals == null ? "" : openGoals) + ";"
-                + (automodeMillis == null ? "" : automodeMillis) + ";"
-                + (nodes == null ? "" : nodes) + ";"
-                + elapsedMillis + ";"
-                + System.currentTimeMillis());
+    void write(String entry, String status) throws IOException {
+        writeLine(entry + ";" + status + ";;;;" + System.currentTimeMillis());
+    }
+
+    void write(String entry, KeY.ProofResult result) throws IOException {
+        writeLine(String.join(";", entry, result.status().name().toLowerCase(), str(result.openGoals()),
+                str(result.automodeMillis()), str(result.nodes()), String.valueOf(System.currentTimeMillis())));
+    }
+
+    private static String str(Object value) {
+        return value == null ? "" : value.toString();
+    }
+
+    private synchronized void writeLine(String line) throws IOException {
+        writer.write(line);
         writer.newLine();
         writer.flush();
     }

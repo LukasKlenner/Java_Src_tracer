@@ -6,27 +6,27 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 /**
- * Writes one line per replayed corpus entry to {@code replay-results.csv}:
- * {@code index;entry;status;exception;run_ms;timestamp_ms}, where {@code index} is the position of the entry in
- * the replay order and {@code timestamp_ms} the wall-clock time (epoch millis) the line was written.
+ * replay-results.csv: {@code index;entry;status;exception;run_ms;timestamp_ms}, one line per replayed corpus entry in
+ * replay order (see {@link ReplayOutcome}). Flushed after every line.
  */
 final class ReplayResultsWriter implements AutoCloseable {
 
-    static final String FILE_NAME = "replay-results.csv";
-
     private final BufferedWriter writer;
+    private int index = 0;
 
-    ReplayResultsWriter(Path file) throws IOException {
-        writer = Files.newBufferedWriter(file);
-        writer.write("index;entry;status;exception;run_ms;timestamp_ms");
-        writer.newLine();
-        writer.flush();
+    ReplayResultsWriter(Path outputDir) throws IOException {
+        writer = Files.newBufferedWriter(outputDir.resolve("replay-results.csv"));
+        writeLine("index;entry;status;exception;run_ms;timestamp_ms");
     }
 
-    void write(int index, String entry, ReplayOutcome outcome, long runMillis) throws IOException {
-        writer.write(index + ";" + entry + ";" + outcome.status() + ";"
-                + (outcome.exception() == null ? "" : outcome.exception()) + ";"
-                + runMillis + ";" + System.currentTimeMillis());
+    void write(String entry, ReplayOutcome outcome, long runMillis) throws IOException {
+        writeLine(String.join(";", String.valueOf(index++), entry, outcome.status(),
+                outcome.exception() == null ? "" : outcome.exception(), String.valueOf(runMillis),
+                String.valueOf(System.currentTimeMillis())));
+    }
+
+    private void writeLine(String line) throws IOException {
+        writer.write(line);
         writer.newLine();
         writer.flush();
     }

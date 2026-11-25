@@ -1,41 +1,23 @@
 """
-Generate source-code mutants of a benchmark program with the Major mutation framework.
+Generate mutants of benchmark programs with the Major mutation framework.
 
-A benchmark lives in evaluation/mutation/benchmarks/<Name>/ and consists of
-  <Name>Impl.java    class <Name>Impl: the methods under test (the only file that is mutated); the
-                     method under test has a JML contract, which KeY verifies along each trace
-  <Name>.java        class <Name>: fuzzerTestOneInput harness (crash and key oracles; not traced)
-  <Name>Assert.java  class <Name>: same harness + Java asserts equivalent to the JML contract
-                     (runtime oracle for Jazzer)
-Both harnesses call into <Name>Impl, so a mutant of <Name>Impl.java is the same bug for
-every approach. Major does not mutate comments, so the JML contract and the asserts (the
-oracles) are never mutated.
+A benchmark (evaluation/mutation/benchmarks/<Name>/) consists of
+  <Name>Impl.java    the methods under test; the method under test has a JML contract. Only this file is mutated.
+  <Name>.java        Jazzer harness (fuzzerTestOneInput) for the crash and key oracles
+  <Name>Assert.java  the same harness with Java asserts equivalent to the JML contract (runtime oracle)
+Major does not mutate comments, so the contract and the asserts are never mutated.
 
-Major mutates <Name>Impl.java; every exported mutant that is not a duplicate is compiled
-with javac. Before that, both harnesses are compiled against the unmutated <Name>Impl.java.
-
-Every invocation writes to a new directory evaluation/mutation-out/mutation_<timestamp>/
-(timestamp like 2026-11-01_17.23.31), so evaluation results of earlier mutant sets are
-never mixed with new mutants. Output per benchmark (mutation_<timestamp>/<Name>/):
-  original/     <Name>.java, <Name>Assert.java, <Name>Impl.java   unmutated baseline
-  mutants/<id>/ <Name>.java, <Name>Assert.java (unchanged copies), <Name>Impl.java (mutated)
-  invalid/<id>/ <Name>Impl.java, javac.log                        mutants that do not compile
-  mutants.csv   id,operator,method,line,offset,transformation,status,duplicate_of
-                offset: character offset of the mutated expression in <Name>Impl.java
-                status: valid        compiles, used by run_mutation_eval.py
-                        duplicate    same source as mutant <duplicate_of>
-                        not_exported Major exported no source file for the mutant
-                        invalid      <Name>Impl.java does not compile
-  major/        Major's working directory (mutants.log, raw exported mutants)
-
-Major's mutator is a javac plugin; this script invokes javac directly (the same way
-tools/major/bin/major does), so it also works on Windows.
+Each invocation writes to a new evaluation/mutation-out/mutation_<timestamp>/<Name>/:
+  original/      unmutated benchmark
+  mutants/<id>/  mutated <Name>Impl.java next to copies of both harnesses (only mutants that compile)
+  invalid/<id>/  mutants that do not compile, with javac.log
+  mutants.csv    id,operator,method,line,offset,transformation,status,duplicate_of
+                 status: valid | duplicate | not_exported | invalid
+  major/         Major's working directory
 
 Usage:
-  python generate_mutants.py Max
-  python generate_mutants.py Max Quicksort BinarySearch
-  python generate_mutants.py Max --javac "C:\\Users\\me\\.jdks\\jdk-11\\bin\\javac.exe"
-  python generate_mutants.py Max --mml path/to/custom.mml.bin --jobs 8
+  python generate_mutants.py Max Quicksort
+  python generate_mutants.py Max --javac C:/jdks/jdk-11/bin/javac.exe --jobs 8
 """
 
 import argparse
@@ -50,17 +32,12 @@ import sys
 import tempfile
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
-BENCHMARKS_DIR = os.path.join(SCRIPT_DIR, "mutation", "benchmarks")
-MUTATION_OUT = os.path.join(SCRIPT_DIR, "mutation-out")
+from common import (BENCHMARKS_DIR, PROJECT_ROOT, assert_harness_file, benchmark_files, harness_file, impl_file,
+                    new_run_dir, read_text, write_text)
+
 MAJOR_HOME = os.path.join(PROJECT_ROOT, "tools", "major")
 DEFAULT_MML = os.path.join(MAJOR_HOME, "mml", "all.mml.bin")
-
-RUN_DIR_PREFIX = "mutation_"
-RUN_TIMESTAMP_FORMAT = "%Y-%m-%d_%H.%M.%S"
 
 # Same --add-opens flags as tools/major/bin/major (needed for javac >= 9)
 ADD_OPENS = [
@@ -69,49 +46,6 @@ ADD_OPENS = [
 ]
 
 MUTANTS_CSV_FIELDS = ["id", "operator", "method", "line", "offset", "transformation", "status", "duplicate_of"]
-
-
-# ---- benchmark layout (also used by run_mutation_eval.py) ----
-
-def harness_file(name):
-    return name + ".java"
-
-
-def assert_harness_file(name):
-    return name + "Assert.java"
-
-
-def impl_file(name):
-    return name + "Impl.java"
-
-
-def benchmark_files(name):
-    return [harness_file(name), assert_harness_file(name), impl_file(name)]
-
-
-# ---- run directories (also used by run_mutation_eval.py and analyze_mutation_eval.py) ----
-
-def new_run_dir():
-    path = os.path.join(MUTATION_OUT, RUN_DIR_PREFIX + datetime.now().strftime(RUN_TIMESTAMP_FORMAT))
-    if os.path.exists(path):
-        sys.exit("Run directory already exists: " + path)
-    os.makedirs(path)
-    return path
-
-
-def resolve_run_dir(run=None):
-    """Directory of a generate_mutants.py run. `run` is a directory name in mutation-out
-    (e.g. mutation_2026-11-01_17.23.31) or a path; None selects the latest run."""
-    if run:
-        path = run if os.path.isdir(run) else os.path.join(MUTATION_OUT, run)
-        if not os.path.isdir(path):
-            sys.exit("Run directory not found: " + run)
-        return os.path.abspath(path)
-    # the timestamp format sorts chronologically
-    runs = sorted(d for d in glob.glob(os.path.join(MUTATION_OUT, RUN_DIR_PREFIX + "*")) if os.path.isdir(d))
-    if not runs:
-        sys.exit("No output of generate_mutants.py in " + MUTATION_OUT)
-    return runs[-1]
 
 
 # ---- javac / Major ----
@@ -213,16 +147,6 @@ def javac_errors(javac, sources):
 
 
 # ---- main ----
-
-def read_text(path):
-    with open(path, encoding="utf-8", newline="") as f:
-        return f.read()
-
-
-def write_text(path, text):
-    with open(path, "w", encoding="utf-8", newline="") as f:
-        f.write(text)
-
 
 def check_harnesses_compile(name, sources, javac):
     """Exit if a harness does not compile against the unmutated <Name>Impl.java.
